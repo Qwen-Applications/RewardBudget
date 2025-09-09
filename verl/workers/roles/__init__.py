@@ -16,7 +16,7 @@ from .actor import ActorWorker
 from .critic import CriticWorker
 
 try:
-    from .reward import RewardModelWorker
+    from .reward_model import RewardModelWorker
 except ImportError:
     RewardModelWorker = None
 
