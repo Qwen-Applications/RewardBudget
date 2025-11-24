@@ -1289,6 +1289,16 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                        # new-changes: periodically sync ref from actor after actor update
+                        ref_sync_freq = self.config.algorithm.get("ref_sync_freq", 100)
+                        if (
+                            self.use_reference_policy
+                            and (not self.ref_in_actor)   # ref 独立 worker 才需要 sync
+                            and (self.global_steps % ref_sync_freq == 0)
+                        ):
+                            actor_state = self.actor_rollout_wg.export_full_state_for_ref()
+                            self.ref_policy_wg.sync_ref_from_actor_state(actor_state)
+                        # end new-changes
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

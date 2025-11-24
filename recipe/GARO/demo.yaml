@@ -89,6 +89,7 @@ custom_reward_function:
   name: compute_score
 algorithm:
   adv_estimator: reward_budget
+  ref_sync_freq: 200
   kl_ctrl:
     type: fixed
     kl_coef: 0.005

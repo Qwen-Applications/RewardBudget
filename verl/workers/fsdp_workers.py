@@ -1030,6 +1030,61 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         return output
 
+    # new-changes: export actor full state for ref sync (no LoRA)
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def export_full_state_for_ref(self):
+        """Export FULL actor state_dict on CPU for syncing ref."""
+        assert self._is_actor
+
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        # Make sure we get full (not sharded) state dict for FSDP1
+        if self.world_size > 1 and fsdp_version(self.actor_module_fsdp) == 1:
+            FSDP.set_state_dict_type(
+                self.actor_module_fsdp,
+                state_dict_type=StateDictType.FULL_STATE_DICT,
+                state_dict_config=FullStateDictConfig(),
+            )
+
+        full_sd = self.actor_module_fsdp.state_dict()
+        out = {}
+        for k, v in full_sd.items():
+            if isinstance(v, DTensor):
+                v = v.full_tensor()
+            out[k] = v.detach().cpu()
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+
+        return out
+    # end new-changes
+
+    # new-changes: sync ref weights from actor full state (no LoRA)
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def sync_ref_from_actor_state(self, actor_state: dict):
+        """Load actor full state_dict into ref model."""
+        assert self._is_ref
+
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.ref_module_fsdp)
+
+        if self.world_size > 1 and fsdp_version(self.ref_module_fsdp) == 1:
+            FSDP.set_state_dict_type(
+                self.ref_module_fsdp,
+                state_dict_type=StateDictType.FULL_STATE_DICT,
+                state_dict_config=FullStateDictConfig(),
+            )
+
+        self.ref_module_fsdp.load_state_dict(actor_state, strict=True)
+        dist.barrier()
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.ref_module_fsdp)
+
+        return True
+    # end new-changes
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         from verl.utils.logger import log_with_rank
