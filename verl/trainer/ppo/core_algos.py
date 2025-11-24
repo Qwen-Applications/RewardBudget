@@ -1497,6 +1497,65 @@ def compute_value_loss(
     return vf_loss, vf_clipfrac
 
 
+# new-changes: adaptive beta helper
+def compute_adaptive_beta_per_sample(
+    token_level_scores: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray | torch.Tensor,
+    beta_min: float,
+    beta_max: float,
+    default_beta: float,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Compute per-sample beta for KL loss:
+
+    For each prompt group (size G):
+      r_i in {0,1} from raw binary reward
+      if all r_i are 0 or all 1 -> skip (use default_beta)
+      p = (# r_i > 0) / G
+      n_eff = 1 / (G * sum_i r_i^2)
+      s = 4 p (1-p) n_eff
+      beta_g = beta_min + (beta_max - beta_min) * s
+
+    Return:
+      beta_per_sample: (bs,) tensor aligned with batch order.
+    """
+    device = token_level_scores.device
+
+    # scalar reward per response (bs,)
+    # we take masked mean so it doesn't scale with length
+    scores = verl_F.masked_mean(token_level_scores, response_mask)  # (bs,)
+    r_bin = (scores > 0).to(scores.dtype)  # (bs,) 0/1
+
+    g = as_torch_index(index, device=device)  # (bs,) group ids, int64
+
+    # group sizes G_g and positive counts pos_g
+    G_g = torch.bincount(g).to(scores.dtype)                      # (n_groups,)
+    pos_g = torch.bincount(g, weights=r_bin).to(scores.dtype)     # (n_groups,)
+
+    # degenerate groups
+    all0 = pos_g == 0
+    all1 = pos_g == G_g
+
+    p = pos_g / G_g.clamp(min=1.0)  # (n_groups,)
+
+    # since r_bin^2 = r_bin for binary rewards, sum r_i^2 = pos_g
+    sum_r2 = pos_g
+    n_eff = 1.0 / (G_g * sum_r2).clamp(min=eps)
+
+    s = 4.0 * p * (1.0 - p) * n_eff
+    beta_g = beta_min + (beta_max - beta_min) * s
+
+    # "skip" rule: fall back to default_beta on all-0 or all-1 groups
+    beta_g = torch.where(all0 | all1, torch.full_like(beta_g, default_beta), beta_g)
+
+    # broadcast back to each sample
+    beta_per_sample = beta_g[g]  # (bs,)
+    return beta_per_sample
+# end new-changes
+
+
 def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:
     """Compute KL divergence given logprob and ref_logprob. Optionally using straight through to bind k2 on other
     kl penalty compute method for unbiased KL gradient estimation.
