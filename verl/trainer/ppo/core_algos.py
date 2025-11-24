@@ -95,6 +95,7 @@ class AdvantageEstimator(str, Enum):
     """
 
     REWARD_BUDGET = "reward_budget"
+    REWARD_BUDGET_MINUS = "reward_budget_minus"
     GAE = "gae"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
@@ -318,6 +319,71 @@ def compute_reward_budget_outcome_advantage(
     return advantages, returns
 # end new-changes
 
+# new-changes:
+@register_adv_est("reward_budget_minus")
+def compute_reward_budget_minus_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    For each prompt group (same uid):
+      r_i = sum token_level_rewards over response tokens
+      g_i = r_i - min_j r_j
+      if all g_i == 0 -> A_i = 0 for all
+      else A_i = g_i / sum_j g_j
+    Then subtract per-group mean(A_i) as baseline.
+    Broadcast to token-level advantages.
+    """
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+
+    id2scores = defaultdict(list)
+    id2min = {}
+    id2sumg = {}
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            id2scores[index[i]].append(scores[i])
+
+        for uid, lst in id2scores.items():
+            s = torch.stack(lst)  # (G,)
+            min_s = s.min()
+            g = (s - min_s).clamp(min=0.0)
+            sum_g = g.sum()
+            id2min[uid] = min_s
+            id2sumg[uid] = sum_g
+
+        adv_scalar = torch.zeros_like(scores)
+        for i in range(bsz):
+            uid = index[i]
+            g_i = (scores[i] - id2min[uid]).clamp(min=0.0)
+            if id2sumg[uid] <= epsilon:
+                adv_scalar[i] = 0.0
+            else:
+                adv_scalar[i] = g_i / (id2sumg[uid] + epsilon)
+
+        # new-changes: compute per-group baseline = mean of adv_scalar in that group
+        id2adv = defaultdict(list)
+        for i in range(bsz):
+            id2adv[index[i]].append(adv_scalar[i])
+        id2mean_adv = {uid: torch.mean(torch.stack(lst)) for uid, lst in id2adv.items()}
+
+        baseline_scalar = torch.zeros_like(adv_scalar)
+        for i in range(bsz):
+            baseline_scalar[i] = id2mean_adv[index[i]]
+
+        adv_scalar = adv_scalar - baseline_scalar
+        # end new-changes
+
+        advantages = adv_scalar.unsqueeze(-1) * response_mask
+        returns = advantages  # GRPO-style (critic-less) return
+
+    return advantages, returns
+# end new-changes
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
 @register_adv_est(AdvantageEstimator.GRPO)  # or simply: @register_adv_est("grpo")
