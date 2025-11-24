@@ -1,0 +1,107 @@
+data:
+  train_files: ~/data/rlhf/gsm8k/train.parquet
+  val_files: ~/data/rlhf/gsm8k/test.parquet
+  train_max_samples: -1  # set to -1 to use full dataset
+  val_max_samples: -1  # set to -1 to use full dataset
+  prompt_key: prompt
+  max_prompt_length: 1024
+  max_response_length: 3072
+  train_batch_size: 128
+  filter_overlong_prompts: False
+  filter_overlong_prompts_workers: 1
+  truncation: error
+actor_rollout_ref:
+ model:
+   path: Qwem/Qwen3-8B
+   enable_gradient_checkpointing: False
+   enable_activation_offload: False
+   trust_remote_code: True
+ actor:
+   strategy: fsdp
+   ppo_mini_batch_size: 256
+   ppo_micro_batch_size_per_gpu: 8
+   use_dynamic_bsz: False
+   use_kl_loss: True
+   use_kl_in_reward: False
+   kl_loss_coef: 0.001
+   adaptive_beta:
+     enable: True
+     beta_min: 0.005
+     beta_max: 0.01
+   optim:
+     lr: 1e-6
+     lr_warmup_steps: -1 # Prioritized. Negative values mean delegating to lr_warmup_steps_ratio.
+     lr_warmup_steps_ratio: 0.  # the total steps will be injected during runtime
+     lr_scheduler_type: constant  # select from constant/cosine
+     total_training_steps: 2000  # must be override by program
+   fsdp_config:
+     param_offload: False
+     optimizer_offload: False
+   checkpoint:
+     save_contents: ['model', 'optimizer', 'extra', "hf_model"]
+ ref:
+   fsdp_config:
+     param_offload: True
+   log_prob_micro_batch_size_per_gpu: 2
+ rollout:
+   name: vllm
+   temperature: 1.0
+   top_k: -1 # 0 for hf rollout, -1 for vllm rollout
+   top_p: 1
+   # for vllm rollout
+   dtype: bfloat16 # should align with FSDP
+   gpu_memory_utilization: 0.5
+   log_prob_micro_batch_size_per_gpu: 16
+   # for hf rollout
+   do_sample: True
+   engine_kwargs: # inference engine parameters, please refer vllm/sglang official doc for detail
+     vllm: {}
+     sglang: {}
+   n: 8 # for each prompt, sample n responses (i.e. num sample times). set it to values > 1 for grpo, rloo
+   calculate_log_probs: False # set to True for computing log probs via rollouts
+   val_kwargs:
+     # sampling parameters for validation
+     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
+     top_p: 1.0
+     temperature: 0
+     n: 1
+     do_sample: False # default eager for validation
+optim:
+  optimizer: adam
+  lr: 1e-6
+  clip_grad: 1.0
+  total_training_steps: 2000  # must be override by program
+  lr_warmup_init: 0.0  # initial learning rate for warmup, default to 0.0
+  lr_warmup_steps: -1 # Prioritized. Negative values mean delegating to lr_warmup_steps_ratio.
+  lr_warmup_steps_ratio: 0.  # the total steps will be injected during runtime
+  lr_decay_style: constant # select from constant/linear/cosine/inverse_square_root
+  min_lr: 0.0 # minimum learning rate, default to 0.0
+reward_model:
+  model:
+    path: Qwem/Qwen3-8B
+    trust_remote_code: True
+    fsdp_config:
+      param_offload: False
+  micro_batch_size_per_gpu: 16
+  max_length: null
+custom_reward_function:
+  path: recipe/GARO/reward.py
+  name: compute_score
+algorithm:
+  adv_estimator: reward_budget
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.005
+    horizon: 10000
+    target_kl: 0.1
+trainer:
+  total_epochs: 30
+  project_name: GARO
+  experiment_name: math
+  logger: ['console', 'wandb']
+  log_val_generations: 0
+  nnodes: 4
+  n_gpus_per_node: 8
+  save_freq: 100
+  test_freq: 100
+  default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name} # local checkpoint path
