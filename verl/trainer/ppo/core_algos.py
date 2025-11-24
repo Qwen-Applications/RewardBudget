@@ -94,6 +94,7 @@ class AdvantageEstimator(str, Enum):
     estimator instead.
     """
 
+    REWARD_BUDGET = "reward_budget"
     GAE = "gae"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
@@ -258,6 +259,64 @@ def compute_gae_advantage_return(
         returns = advantages + values
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
+
+
+# new-changes: add a min-baseline normalized GRPO-style advantage
+@register_adv_est("reward_budget")
+def compute_reward_budget_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    For each prompt group (same uid):
+      r_i = sum token_level_rewards over response tokens
+      g_i = r_i - min_j r_j
+      if all g_i == 0 -> A_i = 0 for all
+      else A_i = g_i / sum_j g_j
+    Broadcast A_i to token-level advantages.
+    """
+    # scalar reward per response (same as official GRPO does)
+    scores = token_level_rewards.sum(dim=-1)  # (bs,)
+
+    id2scores = defaultdict(list)
+    id2min = {}
+    id2sumg = {}
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        # group rewards by uid
+        for i in range(bsz):
+            id2scores[index[i]].append(scores[i])
+
+        # precompute min and sum_g for each group
+        for uid, lst in id2scores.items():
+            s = torch.stack(lst)  # (G,)
+            min_s = s.min()
+            g = (s - min_s).clamp(min=0.0)
+            sum_g = g.sum()
+            id2min[uid] = min_s
+            id2sumg[uid] = sum_g
+
+        # compute per-sample normalized advantage weight A_i
+        adv_scalar = torch.zeros_like(scores)
+        for i in range(bsz):
+            uid = index[i]
+            g_i = (scores[i] - id2min[uid]).clamp(min=0.0)
+            if id2sumg[uid] <= epsilon:
+                adv_scalar[i] = 0.0
+            else:
+                adv_scalar[i] = g_i / (id2sumg[uid] + epsilon)
+
+        # broadcast to token level
+        advantages = adv_scalar.unsqueeze(-1) * response_mask
+        returns = advantages  # GRPO-style (critic-less) return
+
+    return advantages, returns
+# end new-changes
 
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
