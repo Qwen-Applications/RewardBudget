@@ -667,6 +667,69 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
 
+        # new-changes: log average token-level entropy on TRAIN data during validation
+        if self.config.trainer.get("log_train_entropy_during_val", False):
+            num_batches = self.config.trainer.get("train_entropy_num_batches", 1)
+
+            entropy_sum = 0.0
+            entropy_cnt = 0.0
+
+            train_iter = iter(self.train_dataloader)
+
+            for _ in range(num_batches):
+                try:
+                    train_data = next(train_iter)
+                except StopIteration:
+                    break
+
+                train_batch = DataProto.from_single_dict(train_data)
+                train_gen_batch = self._get_gen_batch(train_batch)
+
+                train_gen_batch.meta_info.update(
+                    {
+                        "do_sample": False,
+                        "temperature": 0.0,   # only for GENERATION
+                        "top_k": -1,
+                        "top_p": 1.0,
+                        "n": 1,
+                    }
+                )
+
+                size_divisor = (
+                    self.async_rollout_wg.world_size
+                    if self.async_rollout_wg is not None
+                    else self.actor_rollout_wg.world_size
+                )
+                train_gen_batch_padded, pad_size = pad_dataproto_to_divisor(train_gen_batch, size_divisor)
+
+                if self.async_rollout_wg is not None:
+                    train_out_padded = self.async_rollout_wg.generate_sequences(train_gen_batch_padded)
+                else:
+                    train_out_padded = self.actor_rollout_wg.generate_sequences(train_gen_batch_padded)
+
+                train_batch_padded = train_gen_batch_padded.union(train_out_padded)
+                train_batch = unpad_dataproto(train_batch_padded, pad_size)
+
+                train_batch.meta_info["temperature"] = 1.0
+
+                ent_dp: DataProto = self.actor_rollout_wg.compute_log_prob(
+                    train_batch, calculate_entropy=True
+                )
+                entropys = ent_dp.batch["entropys"]  # (bs, resp_len)
+
+                response_mask = train_batch.batch.get("response_mask", None)
+                if response_mask is None:
+                    response_mask = torch.ones_like(entropys, dtype=entropys.dtype)
+                else:
+                    response_mask = response_mask.to(entropys.dtype)
+
+                entropy_sum += (entropys * response_mask).sum().item()
+                entropy_cnt += response_mask.sum().item()
+
+            if entropy_cnt > 0:
+                metric_dict["train/policy_entropy"] = entropy_sum / entropy_cnt
+        # end new-changes
+
         return metric_dict
 
     def init_workers(self):
