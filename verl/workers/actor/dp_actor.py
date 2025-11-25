@@ -388,13 +388,13 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
-        # new-changes: keep raw token_level_scores for adaptive beta
-        adaptive_beta_cfg = self.config.get("adaptive_beta", None)
+        # new-changes
+        adaptive_beta_cfg = getattr(self.config, "adaptive_beta", None)
         adaptive_beta_enable = (
-            self.config.use_kl_loss and adaptive_beta_cfg is not None and adaptive_beta_cfg.get("enable", False)
+            self.config.use_kl_loss
+            and adaptive_beta_cfg is not None
+            and getattr(adaptive_beta_cfg, "enable", False)
         )
-        if adaptive_beta_enable and "token_level_scores" in data.batch.keys():
-            select_keys.append("token_level_scores")
         # end new-changes
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
@@ -543,29 +543,30 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         policy_loss = pg_loss
 
+                    # new-changes
                     if self.config.use_kl_loss:
                         ref_log_prob = model_inputs["ref_log_prob"]
-                        # compute kl loss
                         kld = kl_penalty(
-                            logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type
+                            logprob=log_prob,
+                            ref_logprob=ref_log_prob,
+                            kl_penalty=self.config.kl_loss_type,
                         )
-                        # new-changes: apply per-sample adaptive beta if present
+
                         beta_per_sample = model_inputs.get("adaptive_beta", None)
                         if beta_per_sample is not None:
                             kld = kld * beta_per_sample.unsqueeze(-1)
-                            kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
-                            policy_loss = policy_loss + kl_loss
-                            micro_batch_metrics["actor/kl_coef"] = beta_per_sample.mean().detach().item()
+                            kl_coef = 1.0  # 系数已经包含在 beta 里
+                            reported_kl_coef = beta_per_sample.mean().detach().item()
                         else:
-                            kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
-                            policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
-                            micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
-                        # end new-changes
-                        kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                            kl_coef = self.config.kl_loss_coef
+                            reported_kl_coef = self.config.kl_loss_coef
 
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+                        kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                        policy_loss = policy_loss + kl_loss * kl_coef
+
                         micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor
-                        micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
+                        micro_batch_metrics["actor/kl_coef"] = reported_kl_coef
+                    # end new-changes
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz

@@ -24,6 +24,14 @@ from verl.utils.profiler.config import ProfilerConfig
 from .engine import FSDPEngineConfig, McoreEngineConfig
 from .model import HFModelConfig
 from .optimizer import OptimizerConfig
+# new-changes: adaptive beta config
+@dataclass
+class AdaptiveBetaConfig:
+    enable: bool = False
+    beta_min: float = 0.0
+    beta_max: float = 0.005
+# end new-changes
+
 
 __all__ = ["PolicyLossConfig", "ActorConfig", "FSDPActorConfig", "McoreActorConfig"]
 
@@ -113,6 +121,9 @@ class ActorConfig(BaseConfig):
     use_torch_compile: bool = True
     kl_loss_coef: float = 0.001
     kl_loss_type: str = "low_var_kl"
+    # new-changes: adaptive beta field
+    adaptive_beta: AdaptiveBetaConfig = field(default_factory=AdaptiveBetaConfig)
+    # end new-changes
     ppo_epochs: int = 1
     shuffle: bool = False
     data_loader_seed: int = 1
