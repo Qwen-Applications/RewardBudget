@@ -1,11 +1,20 @@
-PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
+#!/bin/bash
+set -e
+
+# 关掉 hf_transfer，加回普通下载，避免 no permits available 那个错误
+export HF_HUB_ENABLE_HF_TRANSFER=0
+
+# 你原来的设置
+export PYTHONUNBUFFERED=1
+
+python3 -m verl.trainer.main_ppo \
   data.train_files=data/OpenMathReasoning_train.parquet \
   data.val_files=data/OpenMathReasoning_valid.parquet \
   data.train_batch_size=4 \
   data.max_prompt_length=512 \
   data.max_response_length=256 \
   \
-  actor_rollout_ref.model.path=Qwem/Qwen3-0.6B \
+  actor_rollout_ref.model.path=Qwen/Qwen3-0.6B \
   actor_rollout_ref.model.enable_gradient_checkpointing=False \
   actor_rollout_ref.model.enable_activation_offload=False \
   actor_rollout_ref.model.trust_remote_code=True \
@@ -32,6 +41,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   \
   actor_rollout_ref.rollout.name=vllm \
+  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.temperature=1.0 \
   actor_rollout_ref.rollout.top_k=-1 \
   actor_rollout_ref.rollout.top_p=1.0 \
@@ -65,5 +75,4 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
   trainer.n_gpus_per_node=1 \
   trainer.save_freq=10 \
   trainer.test_freq=2 \
-  trainer.default_local_dir='checkpoints/${trainer.project_name}/${trainer.experiment_name}' \
-  2>&1 | tee verl_garo.log
+  trainer.default_local_dir='checkpoints/${trainer.project_name}/${trainer.experiment_name}'

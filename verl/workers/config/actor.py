@@ -26,7 +26,7 @@ from .model import HFModelConfig
 from .optimizer import OptimizerConfig
 # new-changes: adaptive beta config
 @dataclass
-class AdaptiveBetaConfig:
+class AdaptiveBetaConfig(BaseConfig):
     enable: bool = False
     beta_min: float = 0.0
     beta_max: float = 0.005

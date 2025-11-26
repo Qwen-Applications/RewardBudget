@@ -20,7 +20,7 @@ Output fields:
 
 Filtering:
   - token length: prompt <= max_prompt_length, response <= max_response_length
-  - pass_rate_72b_tir < max_pass_rate
+  - min_pass_rate < pass_rate_72b_tir < max_pass_rate
   - keep first max_train_data valid to train, next max_valid_data to valid
 
 Saving:
@@ -60,7 +60,9 @@ def parse_args():
                    help="Number of valid train samples to keep.")
     p.add_argument("--max_valid_data", type=int, default=1000,
                    help="Number of valid valid samples to keep.")
-    p.add_argument("--max_pass_rate", type=float, default=0.7,
+    p.add_argument("--min_pass_rate", type=float, default=0.5,
+                   help="Filter out samples with pass_rate_72b_tir <= this value.")
+    p.add_argument("--max_pass_rate", type=float, default=0.9,
                    help="Filter out samples with pass_rate_72b_tir >= this value.")
     p.add_argument("--hf_splits", type=str, default="cot",
                    help="Comma-separated HF splits to stream in order.")
@@ -148,7 +150,7 @@ def main():
                 except Exception:
                     continue
 
-                if pr >= args.max_pass_rate:
+                if pr >= args.max_pass_rate or pr <= args.min_pass_rate:
                     continue
 
                 prompt = PROMPT_PREFIX + problem

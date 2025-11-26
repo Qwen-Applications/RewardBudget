@@ -51,6 +51,12 @@ actor_rollout_ref:
 
     # for huge model, layered summon can save memory (prevent OOM) but make it slower
     layered_summon: False
+  
+  actor:
+    adaptive_beta:
+      enable: True
+      beta_min: 0.0
+      beta_max: 0.005
 
 # custom reward function definition
 custom_reward_function:
@@ -64,6 +70,7 @@ custom_reward_function:
 
 # config for the algorithm
 algorithm:
+  ref_sync_freq: 200
 
   # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl.trainer.config.AlgoConfig
@@ -118,6 +125,8 @@ algorithm:
 
 # config for the trainer
 trainer:
+  log_train_entropy_during_val: True
+  train_entropy_num_batches: 4
 
   # Whether to balance batch sizes across distributed workers
   balance_batch: True

@@ -56,11 +56,12 @@ def _normalize_answer(ans: Optional[str]) -> str:
     return s
 
 
-def my_reward_fn(
+def compute_score(
     data_source: str,
     solution_str: str,
     ground_truth: str,
     extra_info: Any = None,
+    **kwargs,
 ) -> float:
     """
     verl-compatible reward function.
