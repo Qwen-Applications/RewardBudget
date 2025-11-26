@@ -53,7 +53,8 @@ def main():
             {
                 "id": ex_id,
                 "prompt": question,
-                "groundtruth": answer,
+                "data_source": args.data_name,
+                "reward_model": {"ground_truth": answer},
                 "answer_type": answer_type,
             }
         )

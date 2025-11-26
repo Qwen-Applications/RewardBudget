@@ -69,7 +69,8 @@ def main():
         records.append(
             {
                 "prompt": prompt,
-                "groundtruth": gt,
+                "reward_model": {"ground_truth":gt},
+                "data_source": "mmlu_pro",
             }
         )
 

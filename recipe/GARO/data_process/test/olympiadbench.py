@@ -82,7 +82,8 @@ def main():
             record = {
                 "prompt": question,
                 "response": solution,
-                "groundtruth": final_answer,
+                "reward_model": {"ground_truth": final_answer},
+                "data_source": "olympiadbench",
             }
             groups[group_name].append(record)
 

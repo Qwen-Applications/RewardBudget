@@ -106,7 +106,8 @@ def process_datasets(configs: List[DatasetConfig]):
             records.append(
                 {
                     "prompt": prompt_str,
-                    "groundtruth": gt_str,
+                    "reward_model": {"ground_truth": gt_str},
+                    "data_source": data_name,
                 }
             )
 
