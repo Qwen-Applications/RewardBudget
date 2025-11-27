@@ -46,7 +46,7 @@ def parse_args():
                    help="HF tokenizer id/path.")
     p.add_argument("--max_prompt_length", type=int, default=1024,
                    help="Max prompt length in tokens.")
-    p.add_argument("--max_response_length", type=int, default=4096,
+    p.add_argument("--max_response_length", type=int, default=8192,
                    help="Max response length in tokens.")
     p.add_argument("--max_train_data", type=int, default=10000,
                    help="Number of valid train samples to keep.")
