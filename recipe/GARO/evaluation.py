@@ -6,8 +6,28 @@ import json
 import os
 from typing import Any, Optional
 
+import torch
+
 from recipe.GARO.reward import compute_score
 
+def is_main_process() -> bool:
+    """只在未初始化 DDP 或 rank0 时返回 True。"""
+    return (not torch.distributed.is_initialized() 
+            or torch.distributed.get_rank() == 0)
+
+
+def local_mkdir(path: str) -> str:
+    """只在 main process 创建目录，然后所有 rank 同步一下。"""
+    if path == "":
+        return path
+
+    if is_main_process():
+        os.makedirs(path, exist_ok=True)
+
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+    return path
 
 def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None) -> None:
     if k <= 0:
@@ -87,10 +107,15 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None) ->
         },
     }
 
-    with open(output_path, "w", encoding="utf-8") as fout:
-        json.dump(metrics, fout, ensure_ascii=False, indent=2)
+    if is_main_process():
+        # 确保上级目录存在（在 main process 上建）
+        dir_path = os.path.dirname(output_path)
+        local_mkdir(dir_path)
 
-    print(f"Metrics written to: {output_path}")
+        with open(output_path, "w", encoding="utf-8") as fout:
+            json.dump(metrics, fout, ensure_ascii=False, indent=2)
+
+        print(f"Metrics written to: {output_path}")
 
 
 if __name__ == "__main__":
