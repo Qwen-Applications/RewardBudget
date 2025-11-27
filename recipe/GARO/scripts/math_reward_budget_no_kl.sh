@@ -9,8 +9,8 @@ ray job submit --address="http://127.0.0.1:8265" \
     python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=4 \
-    data.train_files="${PRIMUS_DATA_PATH}" \
-    data.val_files="${PRIMUS_TEST_DATA_PATH}" \
+    data.train_files="${PRIMUS_DATA_PATH}/OpenMathReasoning_train.parquet" \
+    data.val_files="${PRIMUS_TEST_DATA_PATH}/OpenMathReasoning_valid.parquet" \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
     data.train_batch_size=128 \
@@ -75,10 +75,10 @@ ray job submit --address="http://127.0.0.1:8265" \
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/math500.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/aime24.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_math500.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -86,12 +86,44 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/aime24.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_math500.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/amc23.parquet \
+  data.prompt_key=prompt \
+  data.n_samples=1 \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_amc23.parquet \
+  actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
+  +actor_rollout_ref.model.trust_remote_code=True \
+  rollout.temperature=0.0 \
+  rollout.top_p=1.0 \
+  rollout.prompt_length=1024 \
+  rollout.response_length=8192
+
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_amc23.parquet --k 1
+
+python -m verl.trainer.main_generation \
+  trainer.nnodes=4 \
+  trainer.n_gpus_per_node=8 \
+  data.path=${PRIMUS_TEST_DATA_PATH}/aime24.parquet \
+  data.prompt_key=prompt \
+  data.n_samples=1 \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_aime24.parquet \
+  actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
+  +actor_rollout_ref.model.trust_remote_code=True \
+  rollout.temperature=0.0 \
+  rollout.top_p=1.0 \
+  rollout.prompt_length=1024 \
+  rollout.response_length=8192
+
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_aime24.parquet --k 1
+
+python -m verl.trainer.main_generation \
+  trainer.nnodes=4 \
+  trainer.n_gpus_per_node=8 \
+  data.path=${PRIMUS_TEST_DATA_PATH}/aime25.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
   data.output_path=${PRIMUS_OUTPUT_DIR}/aime25.parquet \
@@ -102,15 +134,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/aime25.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_aime25.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/omni_math.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/amc23.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_omni_math.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -118,15 +150,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/amc23.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_omni_math.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/minerva.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/math500.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_minerva.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -134,15 +166,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/math500.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_minerva.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_math_en_comp.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/omni_math.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_en_comp.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -150,15 +182,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/omni_math.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_en_comp.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_math_en_cee.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/minerva.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_en_cee.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -166,15 +198,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/minerva.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_en_cee.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_math_en_cee.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_en_comp.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_zh_comp.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -182,15 +214,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_en_comp.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_zh_comp.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_math_zh_cee.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_en_cee.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_zh_cee.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -198,15 +230,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_en_cee.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_math_zh_cee.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_physics_en_comp.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_zh_comp.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_en_comp.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -214,15 +246,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_zh_comp.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_en_comp.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_physics_en_cee.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_zh_cee.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_en_cee.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -230,15 +262,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_math_zh_cee.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_en_cee.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_physics_zh_comp.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_en_comp.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_zh_comp.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -246,15 +278,15 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_en_comp.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_zh_comp.parquet --k 1
 
 python -m verl.trainer.main_generation \
   trainer.nnodes=4 \
   trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
+  data.path=${PRIMUS_TEST_DATA_PATH}/OlympiadBench_physics_zh_cee.parquet \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_en_cee.parquet \
+  data.output_path=${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_zh_cee.parquet \
   actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -262,36 +294,4 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192
 
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_en_cee.parquet --k 1
-
-python -m verl.trainer.main_generation \
-  trainer.nnodes=4 \
-  trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
-  data.prompt_key=prompt \
-  data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_zh_comp.parquet \
-  actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
-  +actor_rollout_ref.model.trust_remote_code=True \
-  rollout.temperature=0.0 \
-  rollout.top_p=1.0 \
-  rollout.prompt_length=1024 \
-  rollout.response_length=8192
-
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_zh_comp.parquet --k 1
-
-python -m verl.trainer.main_generation \
-  trainer.nnodes=4 \
-  trainer.n_gpus_per_node=8 \
-  data.path=${PRIMUS_TEST_DATA_PATH} \
-  data.prompt_key=prompt \
-  data.n_samples=1 \
-  data.output_path=${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_zh_cee.parquet \
-  actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR} \
-  +actor_rollout_ref.model.trust_remote_code=True \
-  rollout.temperature=0.0 \
-  rollout.top_p=1.0 \
-  rollout.prompt_length=1024 \
-  rollout.response_length=8192
-
-python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/OlympiadBench_physics_zh_cee.parquet --k 1
+python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/reward_budget_no_kl_OlympiadBench_physics_zh_cee.parquet --k 1
