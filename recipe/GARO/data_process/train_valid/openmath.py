@@ -66,7 +66,7 @@ def parse_args():
                    help="Filter out samples with pass_rate_72b_tir >= this value.")
     p.add_argument("--hf_splits", type=str, default="cot",
                    help="Comma-separated HF splits to stream in order.")
-    p.add_argument("--chunk_size", type=int, default=256,
+    p.add_argument("--chunk_size", type=int, default=1024,
                    help="Flush parquet every N samples to limit RAM.")
     return p.parse_args()
 

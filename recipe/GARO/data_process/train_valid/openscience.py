@@ -52,7 +52,7 @@ def parse_args():
                    help="Number of valid train samples to keep.")
     p.add_argument("--max_valid_data", type=int, default=1000,
                    help="Number of valid valid samples to keep.")
-    p.add_argument("--chunk_size", type=int, default=256,
+    p.add_argument("--chunk_size", type=int, default=1024,
                    help="Flush parquet every N samples to limit RAM.")
     return p.parse_args()
 
