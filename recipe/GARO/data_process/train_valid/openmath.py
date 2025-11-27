@@ -62,11 +62,11 @@ def parse_args():
                    help="Number of valid valid samples to keep.")
     p.add_argument("--min_pass_rate", type=float, default=0.5,
                    help="Filter out samples with pass_rate_72b_tir <= this value.")
-    p.add_argument("--max_pass_rate", type=float, default=0.9,
+    p.add_argument("--max_pass_rate", type=float, default=1.0,
                    help="Filter out samples with pass_rate_72b_tir >= this value.")
     p.add_argument("--hf_splits", type=str, default="cot",
                    help="Comma-separated HF splits to stream in order.")
-    p.add_argument("--chunk_size", type=int, default=10000,
+    p.add_argument("--chunk_size", type=int, default=256,
                    help="Flush parquet every N samples to limit RAM.")
     return p.parse_args()
 
