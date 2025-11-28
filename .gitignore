@@ -9,6 +9,9 @@
 **/playground
 **/wandb
 
+# wheel
+flash_attn-*.whl
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

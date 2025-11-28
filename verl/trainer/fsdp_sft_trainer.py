@@ -76,7 +76,8 @@ from verl.utils.ulysses import (
 from verl.workers.config.optimizer import build_optimizer
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
-# new-changes: reward-based accuracy metric
+# new-changes
+from datasets import load_dataset
 from recipe.GARO.reward import compute_score, _extract_boxed_all, _normalize_answer
 # end new-changes
 
@@ -120,6 +121,22 @@ class FSDPSFTTrainer:
             print(f"Using remove padding: {self.use_remove_padding}")
 
         self._build_dataloader(train_dataset, val_dataset)
+        # new-changes: optional separate validation parquet for pass@1 accuracy
+        self.val_pass1_dataset = None
+        val_pass1_parquet = getattr(self.config.trainer, "val_pass1_parquet", None)
+        if val_pass1_parquet is not None:
+            # 这里假定 val_pass1_parquet 本身就是本地路径（绝对/相对都可以）
+            ds = load_dataset("parquet", data_files={"val_pass1": val_pass1_parquet})
+            # ds["val_pass1"] 是一个 HF Dataset，每条样本应包含：
+            #   - "prompt": str
+            #   - "reward_model[ground_truth]": str
+            self.val_pass1_dataset = ds["val_pass1"]
+            if self.device_mesh.get_rank() == 0:
+                print(
+                    f"Loaded pass@1 validation dataset from local parquet: {val_pass1_parquet}, "
+                    f"num_examples={len(self.val_pass1_dataset)}"
+                )
+        # end new-changes
 
         self.lora = self.config.model.get("lora_adapter_path") is not None or self.config.model.lora_rank > 0
 
@@ -686,188 +703,125 @@ class FSDPSFTTrainer:
         return avg_entropy
     # end new-changes
 
-    # new-changes: pass@1 accuracy on validation set (greedy decoding)
-    def _compute_val_pass_at_1(self):
+    # new-changes: pass@1 accuracy on separate parquet validation file
+    def _compute_val_pass_at_1_from_parquet(self):
         """
-        Compute pass@1 accuracy on val_dataset using greedy decoding.
+        使用单独的 parquet 验证文件计算 pass@1 accuracy（greedy decoding）：
 
-        Design:
-        - Use loss_mask to infer where the answer (CoT+final) starts.
-        - Prompt = tokens before the first position where loss_mask == 1.
-        - Ground-truth answer = last \\boxed{...} in the *gold* full text
-          decoded from input_ids (masked by attention_mask).
-        - Prediction = greedy generated continuation from the prompt
-          (decode only the newly generated tokens).
-        - Score per sample = compute_score(data_source, solution_str, gt),
-          averaged over all samples considered.
+        parquet 每条样本字段：
+        - "prompt": str
+        - "reward_model[ground_truth]": str  （单个答案，和 compute_score 使用的格式匹配）
 
-        Config fields (under trainer):
-        - log_val_pass1_accuracy: bool (外部控制是否调用本函数)
-        - val_pass1_num_batches: int, how many validation batches to use (default: 0 -> disabled)
-        - val_pass1_batch_size: int, per-rank eval batch size (default: 8)
-        - val_pass1_max_new_tokens: int, max new tokens to generate (default: 256)
-        - val_pass1_data_source: str, passed to compute_score (default: "default")
+        做法：
+        - 所有 GPU 共同遍历整个 val_pass1_dataset，每个 rank 处理一部分 index: range(rank, N, world_size)
+        - 对 prompt 做 tokenize + padding，调用 generate(..., do_sample=False)
+        - 只取新生成的 token 解码为 solution_str
+        - 与 ground_truth 用 compute_score(...) 计算 0/1 reward
+        - 最后在所有 rank 上 all_reduce，得到全局 pass@1
         """
-        num_batches = getattr(self.config.trainer, "val_pass1_num_batches", 0)
-        if num_batches <= 0:
+        if self.val_pass1_dataset is None:
             return None
+
+        dataset = self.val_pass1_dataset
+        num_examples = len(dataset)
+        if num_examples == 0:
+            return None
+
+        rank = torch.distributed.get_rank()
+        world_size = torch.distributed.get_world_size()
 
         batch_size = getattr(self.config.trainer, "val_pass1_batch_size", 8)
         max_new_tokens = getattr(self.config.trainer, "val_pass1_max_new_tokens", 256)
         data_source = getattr(self.config.trainer, "val_pass1_data_source", "default")
 
-        # Determine dp rank and world_size (follow the same logic as _build_dataloader)
-        if self.config.ulysses_sequence_parallel_size > 1:
-            rank = self.ulysses_device_mesh.get_local_rank("dp")
-            world_size = self.ulysses_device_mesh.size(0)
-        else:
-            rank = self.device_mesh.get_rank()
-            world_size = self.device_mesh.size()
-
-        device_name = get_device_name()
-
-        val_sampler_for_acc = DistributedSampler(
-            self.val_dataset,
-            shuffle=False,
-            num_replicas=world_size,
-            rank=rank,
-            drop_last=False,
-        )
-        val_loader_for_acc = DataLoader(
-            self.val_dataset,
-            batch_size=batch_size,
-            sampler=val_sampler_for_acc,
-            num_workers=8,
-            pin_memory=True,
-            pin_memory_device=device_name,
-        )
-
-        # unwrap FSDP for generation if needed
+        # FSDP unwrap 以便调用 generate
         model_for_gen = self.fsdp_model
-        from torch.distributed.fsdp import FullyShardedDataParallel as _FSDP_cls  # type: ignore
-        if isinstance(self.fsdp_model, _FSDP_cls):
-            model_for_gen = self.fsdp_model.module
+        try:
+            from torch.distributed.fsdp import FullyShardedDataParallel as _FSDP_cls  # type: ignore
+            if isinstance(self.fsdp_model, _FSDP_cls):
+                model_for_gen = self.fsdp_model.module
+        except Exception:
+            pass
 
         model_for_gen.eval()
 
-        local_correct = torch.tensor(0.0, device=self.device_name)
-        local_count = torch.tensor(0.0, device=self.device_name)
+        local_correct = 0.0
+        local_count = 0.0
 
-        with torch.no_grad():
-            for b_idx, batch in enumerate(val_loader_for_acc):
-                if b_idx >= num_batches:
-                    break
+        def _flush_batch(batch_prompts, batch_gts):
+            nonlocal local_correct, local_count
+            if not batch_prompts:
+                return
 
-                # batch is a plain dict from Dataset
-                input_ids = batch["input_ids"].to(self.device_name)
-                attention_mask = batch["attention_mask"].to(self.device_name)
-                loss_mask = batch["loss_mask"].to(self.device_name)
+            enc = self.tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.config.data.max_length,
+            )
+            input_ids = enc["input_ids"].to(self.device_name)
+            attention_mask = enc["attention_mask"].to(self.device_name)
 
-                B, L = input_ids.shape
-
-                prompt_input_ids_list = []
-                prompt_attention_mask_list = []
-                gold_answers = []
-
-                for i in range(B):
-                    seq_input = input_ids[i]
-                    seq_attn = attention_mask[i]
-                    seq_loss_mask = loss_mask[i]
-
-                    # find first index where loss_mask == 1 (answer/CoT starts)
-                    ones = (seq_loss_mask == 1).nonzero(as_tuple=False)
-                    if ones.numel() == 0:
-                        # no supervised region -> skip this sample for pass@1
-                        continue
-                    first_label_idx = int(ones[0].item())
-
-                    # prompt tokens: [0, first_label_idx)
-                    prompt_ids = seq_input[:first_label_idx]
-                    prompt_mask = seq_attn[:first_label_idx]
-
-                    # avoid empty prompt; fallback to full sequence if needed
-                    if prompt_ids.numel() == 0:
-                        prompt_ids = seq_input
-                        prompt_mask = seq_attn
-
-                    prompt_input_ids_list.append(prompt_ids)
-                    prompt_attention_mask_list.append(prompt_mask)
-
-                    # decode gold full text (only valid tokens where attention_mask == 1)
-                    valid_ids = seq_input[seq_attn.bool()]
-                    gold_text = self.tokenizer.decode(valid_ids, skip_special_tokens=True)
-
-                    boxed = _extract_boxed_all(gold_text)
-                    if boxed:
-                        gt = _normalize_answer(boxed[-1])
-                    else:
-                        gt = ""
-                    gold_answers.append(gt)
-
-                if not prompt_input_ids_list:
-                    continue
-
-                # pad prompts in this batch
-                max_len = max(t.size(0) for t in prompt_input_ids_list)
-                pad_id = self.tokenizer.pad_token_id
-                if pad_id is None:
-                    pad_id = self.tokenizer.eos_token_id
-
-                gen_input_ids = torch.full(
-                    (len(prompt_input_ids_list), max_len),
-                    pad_id,
-                    dtype=input_ids.dtype,
-                    device=self.device_name,
-                )
-                gen_attention_mask = torch.zeros(
-                    (len(prompt_input_ids_list), max_len),
-                    dtype=attention_mask.dtype,
-                    device=self.device_name,
-                )
-
-                for i, (ids, mask) in enumerate(zip(prompt_input_ids_list, prompt_attention_mask_list)):
-                    L_i = ids.size(0)
-                    gen_input_ids[i, :L_i] = ids
-                    # prompt_mask 里本来就标了哪些是有效的 token，可以直接用
-                    gen_attention_mask[i, :L_i] = mask[:L_i]
-
-                # greedy decoding
+            with torch.no_grad():
                 outputs = model_for_gen.generate(
-                    input_ids=gen_input_ids,
-                    attention_mask=gen_attention_mask,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     use_cache=True,
                 )
 
-                # 对齐 outputs / gold_answers / prompt lengths
-                for i, out_ids in enumerate(outputs):
-                    # 原 prompt 长度 = 有效 mask 的和
-                    L_prompt = int(gen_attention_mask[i].sum().item())
-                    gen_tokens = out_ids[L_prompt:]
-                    solution_str = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
-                    gt = gold_answers[i]
+            for i, out_ids in enumerate(outputs):
+                # prompt 长度 = attention_mask 里 1 的个数
+                L_prompt = int(attention_mask[i].sum().item())
+                gen_tokens = out_ids[L_prompt:]
+                solution_str = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
+                gt = batch_gts[i]
 
-                    score = compute_score(
-                        data_source=data_source,
-                        solution_str=solution_str,
-                        ground_truth=gt,
-                    )
-                    local_correct += float(score)
-                    local_count += 1.0
+                score = compute_score(
+                    data_source=data_source,
+                    solution_str=solution_str,
+                    ground_truth=gt,
+                )
+                local_correct += float(score)
+                local_count += 1.0
 
-        # Aggregate across data-parallel ranks
+        batch_prompts: list[str] = []
+        batch_gts: list[str] = []
+
+        # 每个 rank 处理自己的切片
+        for idx in range(rank, num_examples, world_size):
+            row = dataset[int(idx)]
+            prompt = row["prompt"]
+            gt_str = row["reward_model[ground_truth]"]
+            batch_prompts.append(prompt)
+            batch_gts.append(gt_str)
+
+            if len(batch_prompts) >= batch_size:
+                _flush_batch(batch_prompts, batch_gts)
+                batch_prompts.clear()
+                batch_gts.clear()
+
+        # 处理最后一个不满 batch
+        _flush_batch(batch_prompts, batch_gts)
+        batch_prompts.clear()
+        batch_gts.clear()
+
+        correct_tensor = torch.tensor(local_correct, device=self.device_name)
+        count_tensor = torch.tensor(local_count, device=self.device_name)
+
         if is_cuda_available:
-            torch.distributed.all_reduce(local_correct, op=torch.distributed.ReduceOp.SUM)
-            torch.distributed.all_reduce(local_count, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(correct_tensor, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(count_tensor, op=torch.distributed.ReduceOp.SUM)
         elif is_npu_available:
-            torch.distributed.all_reduce(local_correct)
-            torch.distributed.all_reduce(local_count)
+            torch.distributed.all_reduce(correct_tensor)
+            torch.distributed.all_reduce(count_tensor)
 
-        if local_count.item() == 0.0:
+        if count_tensor.item() == 0.0:
             return None
 
-        acc = (local_correct / (local_count + 1e-8)).detach().item()
+        acc = (correct_tensor / (count_tensor + 1e-8)).detach().item()
         return acc
     # end new-changes
 
@@ -1106,7 +1060,6 @@ class FSDPSFTTrainer:
                 is_valid_step = global_step % self.config.trainer.test_freq == 0
                 is_save_step = global_step % self.config.trainer.save_freq == 0
 
-                # early exit or validation step
                 if is_last_step or (self.config.trainer.test_freq > 0 and is_valid_step):
                     # Perform validation
                     val_losses = []
@@ -1116,25 +1069,30 @@ class FSDPSFTTrainer:
                         )
                         val_loss = self.validation_step(val_data)
                         val_losses.append(val_loss)
+
                     # new-changes: optionally compute policy entropy on sampled training data
                     train_entropy = None
                     if getattr(self.config.trainer, "log_train_entropy_during_val", False):
                         train_entropy = self._compute_train_policy_entropy()
                     # end new-changes
-                    # new-changes: optionally compute val pass@1 accuracy via greedy decoding
+
+                    # new-changes: optionally compute pass@1 accuracy on separate parquet validation file
                     val_pass1 = None
                     if getattr(self.config.trainer, "log_val_pass1_accuracy", False):
-                        val_pass1 = self._compute_val_pass_at_1()
+                        val_pass1 = self._compute_val_pass_at_1_from_parquet()
                     # end new-changes
+
                     if rank == 0:
                         val_loss = torch.mean(torch.stack(val_losses))
                         metric = {"val/loss": val_loss.detach().item()}
-                        # new-changes: also log train policy entropy & val pass@1 if available
+
+                        # new-changes: log extra metrics if available
                         if train_entropy is not None:
                             metric["train/policy_entropy"] = train_entropy
                         if val_pass1 is not None:
                             metric["val/pass@1"] = val_pass1
                         # end new-changes
+
                         tracking.log(data=metric, step=global_step)
                         last_valid_metric = metric
                     torch.distributed.barrier()

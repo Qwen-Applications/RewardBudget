@@ -35,6 +35,7 @@ torchrun \
   data.val_files=${PRIMUS_DATA_PATH}/OpenMathReasoning_valid.parquet \
   data.prompt_key=prompt \
   data.response_key=response \
+  data.train_batch_size=32 \
   data.micro_batch_size_per_gpu=1 \
   model.partial_pretrain=Qwen/Qwen3-8B \
   model.enable_gradient_checkpointing=True \
@@ -42,6 +43,16 @@ torchrun \
   trainer.project_name=GARO \
   trainer.experiment_name=OpenMath_SFT \
   trainer.total_epochs=5 \
+  trainer.test_freq=200 \
+  trainer.save_freq=200 \
+  trainer.log_train_entropy_during_val=True \
+  trainer.train_entropy_num_batches=4 \
+  trainer.train_entropy_batch_size=32 \
+  trainer.val_pass1_parquet=${PRIMUS_DATA_PATH}/OpenMathReasoning_valid.parquet \
+  trainer.val_pass1_batch_size=8 \
+  trainer.val_pass1_max_new_tokens=8192 \
+  trainer.log_val_pass1_accuracy=True \
+  trainer.val_pass1_data_source=OpenMathReasoning_Valid \
   trainer.default_local_dir=${PRIMUS_SAVE_CHECKPOINT_DIR} \
   trainer.logger='["console","wandb"]'
 
