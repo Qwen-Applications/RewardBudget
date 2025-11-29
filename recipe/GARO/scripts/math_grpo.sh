@@ -12,7 +12,8 @@ if [ "${RANK}" -ne 0 ]; then
     exit 0
 fi
 
-echo "提交GRPO训练脚本 at RANK ${RANK} (${MASTER_ADDR}:${RAY_PORT})"
+export RAY_API_SERVER_ADDRESS="http://${MASTER_ADDR}:${RAY_PORT}"
+echo "提交GRPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
 ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
     --runtime-env=verl/trainer/runtime_env.yaml \
     -- \
