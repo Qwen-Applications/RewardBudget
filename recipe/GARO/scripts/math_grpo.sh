@@ -3,16 +3,16 @@ set -e
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
 
-ray job submit --address="http://127.0.0.1:8265" \
+ray job submit --address="http://127.0.0.1:${RAY_PORT}" \
     --runtime-env=verl/trainer/runtime_env.yaml \
     -- \
-    python3 -m verl.trainer.main_ppo \
-      data.train_files="${PRIMUS_DATA_PATH}/OpenMathReasoning_train.parquet" \
-      data.val_files="${PRIMUS_DATA_PATH}/OpenMathReasoning_valid.parquet" \
+    python -m verl.trainer.main_ppo \
+      data.train_files="${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+      data.val_files="${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
       data.max_prompt_length=1024 \
       data.max_response_length=8192 \
       data.train_batch_size=128 \
-      actor_rollout_ref.model.path=Qwen/Qwen3-8B \
+      actor_rollout_ref.model.path=${PRIMUS_SOURCE_CHECKPOINT_DIR} \
       actor_rollout_ref.model.enable_gradient_checkpointing=False \
       actor_rollout_ref.model.enable_activation_offload=False \
       actor_rollout_ref.model.trust_remote_code=True \
@@ -62,8 +62,8 @@ ray job submit --address="http://127.0.0.1:8265" \
       trainer.experiment_name=OpenMath_GRPO \
       trainer.logger='["console","wandb"]' \
       trainer.log_val_generations=0 \
-      trainer.nnodes=4 \
-      trainer.n_gpus_per_node=8 \
+      trainer.nnodes=${NNODES} \
+      trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
       trainer.save_freq=200 \
       trainer.test_freq=200 \
       trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
@@ -293,3 +293,5 @@ ray job submit --address="http://127.0.0.1:8265" \
 #   rollout.response_length=8192
 
 # python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/grpo_OlympiadBench_physics_zh_cee.parquet --k 1
+
+sleep 2h

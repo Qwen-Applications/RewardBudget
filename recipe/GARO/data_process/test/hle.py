@@ -1,6 +1,6 @@
-import os
-import json
 import argparse
+import json
+import os
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -13,13 +13,13 @@ def parse_args():
         "--save_dir",
         type=str,
         required=True,
-        help=f"保存 JSONL/Parquet 的目录（默认: {DEFAULT_SAVE_DIR}）",
+        help=f"保存 JSONL/Parquet 的目录",
     )
     parser.add_argument(
         "--data_name",
         type=str,
         default="hle",
-        help=f"输出文件前缀名（默认: {DEFAULT_DATA_NAME}，会生成 data_name.jsonl / data_name.parquet）",
+        help=f"输出文件前缀名（会生成 data_name.jsonl / data_name.parquet）",
     )
     return parser.parse_args()
 
