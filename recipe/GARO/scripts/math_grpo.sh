@@ -40,7 +40,7 @@ else
         actor_rollout_ref.model.trust_remote_code=True \
         actor_rollout_ref.actor.strategy=fsdp \
         actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-        actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+        actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.actor.use_dynamic_bsz=False \
         actor_rollout_ref.actor.use_kl_loss=True \
         actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -63,7 +63,7 @@ else
         actor_rollout_ref.rollout.top_p=1.0 \
         actor_rollout_ref.rollout.dtype=bfloat16 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
-        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
+        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.rollout.do_sample=True \
         actor_rollout_ref.rollout.n=8 \
         actor_rollout_ref.rollout.calculate_log_probs=False \
@@ -109,6 +109,7 @@ fi
 
 # Cleanup for all nodes
 ray stop
+sleep 2h
 exit 0
 
 # # Evaluate ${PRIMUS_SAVE_CHECKPOINT_DIR}
@@ -336,5 +337,3 @@ exit 0
 #   rollout.response_length=8192
 
 # python3 recipe/GARO/evaluation.py --file ${PRIMUS_OUTPUT_DIR}/grpo_OlympiadBench_physics_zh_cee.parquet --k 1
-
-sleep 2h
