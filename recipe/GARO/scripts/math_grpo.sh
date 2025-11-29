@@ -2,13 +2,14 @@
 set -e
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
+DATA_DIR="/primus_datasets/zmy"
 
 ray job submit --address="http://127.0.0.1:${RAY_PORT}" \
     --runtime-env=verl/trainer/runtime_env.yaml \
     -- \
     python -m verl.trainer.main_ppo \
-      data.train_files="${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
-      data.val_files="${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
+      data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+      data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
       data.max_prompt_length=1024 \
       data.max_response_length=8192 \
       data.train_batch_size=128 \
