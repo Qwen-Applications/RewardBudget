@@ -4,7 +4,6 @@ set -e
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
 DATA_DIR="/primus_datasets/zmy"
-RAY_PORT=6379
 
 # Quit the script if ${RANK} is not 0
 if [ "${RANK}" -ne 0 ]; then
@@ -12,7 +11,7 @@ if [ "${RANK}" -ne 0 ]; then
     exit 0
 fi
 
-export RAY_API_SERVER_ADDRESS="http://${MASTER_ADDR}:${RAY_PORT}"
+export RAY_API_SERVER_ADDRESS="http://localhost:8265"
 echo "提交GRPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
 ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
     --runtime-env=verl/trainer/runtime_env.yaml \
