@@ -1,8 +1,15 @@
 #!/bin/bash
 set -e
+
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
 DATA_DIR="/primus_datasets/zmy"
+
+# Quit the script if ${RANK} is not 0
+if [ "${RANK}" -ne 0 ]; then
+    echo "RANK is ${RANK}, not 0, skip the training script."
+    exit 0
+fi
 
 ray job submit --address="http://127.0.0.1:${RAY_PORT}" \
     --runtime-env=verl/trainer/runtime_env.yaml \
