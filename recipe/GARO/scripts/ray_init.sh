@@ -30,14 +30,14 @@ function init_ray() {
     local max_retries=30
     local retry_interval=10
 
-    if [ $NODE_RANK -eq 0 ]; then
+    if [ $RANK -eq 0 ]; then
         echo "Starting Ray head node..."
         ray start --head --port=${RAY_PORT} --dashboard-host=0.0.0.0
         echo "Ray head node is ready"
     else
         echo "Connecting to Ray head node..."
         # Add small random delay based on rank to prevent connection storms
-#        sleep $(echo "scale=3; $NODE_RANK * 0.5" | bc)
+#        sleep $(echo "scale=3; $RANK * 0.5" | bc)
         for i in $(seq 1 $max_retries); do
             ray start --address=${MASTER_ADDR}:${RAY_PORT}
             # Wait a moment to check if ray is running

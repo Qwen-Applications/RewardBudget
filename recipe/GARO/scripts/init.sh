@@ -10,8 +10,7 @@ hf auth login --token REDACTED_HF_TOKEN
 
 
 echo "开始执行节点同步逻辑"
-local_ip=`ip addr show dev intranet_bond | grep "inet " | awk '{print $2}'`
-echo "RANK${RANK} ${local_ip}" > ${PRIMUS_OUTPUT_DIR}/pre_common_ip_${PRIMUS_JOB_SUBMIT_TIMESTAMP}_${RANK}.txt
+echo "RANK${RANK}" > ${PRIMUS_OUTPUT_DIR}/pre_common_ip_${PRIMUS_JOB_SUBMIT_TIMESTAMP}_${RANK}.txt
 
 counter=`cat ${PRIMUS_OUTPUT_DIR}/pre_common_ip_${PRIMUS_JOB_SUBMIT_TIMESTAMP}_*.txt | wc -l `
 while [ $counter -lt ${NNODES} ]
