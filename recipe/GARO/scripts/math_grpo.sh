@@ -11,7 +11,7 @@ if [ "${RANK}" -ne 0 ]; then
     exit 0
 fi
 
-ray job submit --address="http://127.0.0.1:${RAY_PORT}" \
+ray job submit --address="${MASTER_ADDR}:${RAY_PORT}" \
     --runtime-env=verl/trainer/runtime_env.yaml \
     -- \
     python -m verl.trainer.main_ppo \
