@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
