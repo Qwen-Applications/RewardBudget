@@ -88,7 +88,7 @@ else
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=200 \
-        trainer.test_freq=200 \
+        trainer.test_freq=50 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
     # Capture exit status
