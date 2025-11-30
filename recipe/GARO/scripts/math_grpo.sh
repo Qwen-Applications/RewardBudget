@@ -63,7 +63,7 @@ else
         actor_rollout_ref.rollout.top_k=-1 \
         actor_rollout_ref.rollout.top_p=1.0 \
         actor_rollout_ref.rollout.dtype=bfloat16 \
-        actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+        actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
         actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.rollout.do_sample=True \
         actor_rollout_ref.rollout.n=8 \
@@ -76,7 +76,7 @@ else
         custom_reward_function.path=recipe/GARO/reward.py \
         custom_reward_function.name=compute_score \
         algorithm.use_kl_in_reward=False \
-        algorithm.adv_estimator=reward_budget_max \
+        algorithm.adv_estimator=grpo \
         algorithm.ref_sync_freq=20000000 \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
@@ -88,7 +88,7 @@ else
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=200 \
-        trainer.test_freq=200 \
+        trainer.test_freq=50 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
     # Capture exit status

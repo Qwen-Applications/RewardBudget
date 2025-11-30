@@ -55,6 +55,7 @@ else
         actor_rollout_ref.actor.optim.total_training_steps=2000 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+        actor_rollout_ref.actor.loss_agg_mode="seq-mean-token-mean" \
         actor_rollout_ref.actor.checkpoint.save_contents='["model","optimizer","extra","hf_model"]' \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \
         actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
@@ -63,7 +64,7 @@ else
         actor_rollout_ref.rollout.top_k=-1 \
         actor_rollout_ref.rollout.top_p=1.0 \
         actor_rollout_ref.rollout.dtype=bfloat16 \
-        actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+        actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
         actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.rollout.do_sample=True \
         actor_rollout_ref.rollout.n=8 \
@@ -88,7 +89,7 @@ else
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=200 \
-        trainer.test_freq=200 \
+        trainer.test_freq=50 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
     # Capture exit status
