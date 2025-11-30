@@ -35,7 +35,7 @@ else
         data.max_response_length=8192 \
         data.train_batch_size=128 \
         actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B" \
-        actor_rollout_ref.model.enable_gradient_checkpointing=False \
+        actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \
         actor_rollout_ref.model.trust_remote_code=True \
         actor_rollout_ref.actor.strategy=fsdp \
