@@ -37,7 +37,7 @@ else
         data.train_batch_size=128 \
         actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
-        actor_rollout_ref.model.enable_activation_offload=True \
+        actor_rollout_ref.model.enable_activation_offload=False \
         actor_rollout_ref.model.trust_remote_code=True \
         actor_rollout_ref.actor.strategy=fsdp \
         actor_rollout_ref.actor.ppo_mini_batch_size=32 \
@@ -76,7 +76,7 @@ else
         custom_reward_function.path=recipe/GARO/reward.py \
         custom_reward_function.name=compute_score \
         algorithm.use_kl_in_reward=False \
-        algorithm.adv_estimator=grpo \
+        algorithm.adv_estimator=reward_budget_max \
         algorithm.ref_sync_freq=20000000 \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \

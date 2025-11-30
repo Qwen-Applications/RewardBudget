@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 DATA_DIR="/primus_datasets/zmy"
-
 
 if [ "${RANK}" -ne 0 ]; then
     # Other nodes wait for training to complete
@@ -25,19 +25,17 @@ if [ "${RANK}" -ne 0 ]; then
 else
     # Primary node runs training
     export RAY_API_SERVER_ADDRESS="http://localhost:8265"
-    echo "提交GRPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
+    echo "提交reward_budget_max_no_kl训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
     ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
-        python3 -m verl.trainer.main_ppo \
-        trainer.n_gpus_per_node=8 \
-        trainer.nnodes=4 \
-        data.train_files="${PRIMUS_DATA_PATH}/OpenMathReasoning_train.parquet" \
-        data.val_files="${PRIMUS_TEST_DATA_PATH}/OpenMathReasoning_valid.parquet" \
+        python -m verl.trainer.main_ppo \
+        data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+        data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=128 \
-        actor_rollout_ref.model.path=Qwen/Qwen3-8B \
+        actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \
         actor_rollout_ref.model.trust_remote_code=True \
@@ -46,7 +44,7 @@ else
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.actor.use_dynamic_bsz=False \
         actor_rollout_ref.actor.use_kl_loss=False \
-        actor_rollout_ref.actor.kl_loss_coef=0.0 \
+        actor_rollout_ref.actor.kl_loss_coef=0.001 \
         actor_rollout_ref.actor.adaptive_beta.enable=False \
         actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \
         actor_rollout_ref.actor.adaptive_beta.beta_max=0.005 \
@@ -84,14 +82,37 @@ else
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=OpenMath_Reward_Budget_Max_No_KL \
+        trainer.experiment_name=OpenMath_Reward_Budget_Max_no_KL \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=0 \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=200 \
         trainer.test_freq=200 \
-        trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_PATH}"
+        trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
+    
+    # Capture exit status
+    TRAINING_STATUS=$?
+
+    if [ $TRAINING_STATUS -eq 0 ]; then
+        # Only create completion file if training succeeds
+        touch ${PRIMUS_OUTPUT_DIR}/training_complete
+        echo "Training completed successfully"
+    else
+        echo "Training failed with exit code $TRAINING_STATUS"
+        # Create a failure file to signal other nodes
+        echo $TRAINING_STATUS > ${PRIMUS_OUTPUT_DIR}/training_failed
+        ray stop
+        exit $TRAINING_STATUS
+    fi
+fi
+
+
+# Cleanup for all nodes
+ray stop
+sleep 2h
+exit 0
+
 
 # # Evaluate ${PRIMUS_SAVE_CHECKPOINT_DIR}
 
