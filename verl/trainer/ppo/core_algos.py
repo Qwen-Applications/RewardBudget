@@ -94,8 +94,9 @@ class AdvantageEstimator(str, Enum):
     estimator instead.
     """
 
-    REWARD_BUDGET = "reward_budget"
-    REWARD_BUDGET_MINUS = "reward_budget_minus"
+    REWARD_BUDGET_MAX = "reward_budget_max"
+    REWARD_BUDGET_MIN = "reward_budget_min"
+    REWARD_BUDGET_MEAN = "reward_budget_mean"
     GAE = "gae"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
@@ -261,10 +262,60 @@ def compute_gae_advantage_return(
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
 
+# new-changes: reward - max(reward) baseline
+@register_adv_est("reward_budget_max")
+def compute_reward_budget_max_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    For each prompt group (same uid):
+      r_i = sum token_level_rewards over response tokens
+      A_i = r_i - max_j r_j   (reward - max(reward) baseline, per group)
+
+    Then broadcast A_i to token-level advantages.
+    This is a simple baseline, no normalization by sum/std.
+    """
+    # scalar reward per response (bs,)
+    scores = token_level_rewards.sum(dim=-1)
+
+    id2scores = defaultdict(list)
+    id2max = {}
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+
+        # group rewards by uid
+        for i in range(bsz):
+            uid = index[i]
+            id2scores[uid].append(scores[i])
+
+        # precompute max reward per group
+        for uid, lst in id2scores.items():
+            s = torch.stack(lst)  # (G,)
+            max_s = s.max()
+            id2max[uid] = max_s
+
+        # per-sample scalar advantage: r_i - max_group_reward
+        adv_scalar = torch.zeros_like(scores)
+        for i in range(bsz):
+            uid = index[i]
+            adv_scalar[i] = scores[i] - id2max[uid]
+
+        # broadcast to token level
+        advantages = adv_scalar.unsqueeze(-1) * response_mask
+        returns = advantages  # critic-less
+
+    return advantages, returns
+# end new-changes
 
 # new-changes: add a min-baseline normalized GRPO-style advantage
-@register_adv_est("reward_budget")
-def compute_reward_budget_outcome_advantage(
+@register_adv_est("reward_budget_min")
+def compute_reward_budget_min_outcome_advantage(
     token_level_rewards: torch.Tensor,
     response_mask: torch.Tensor,
     index: np.ndarray,
@@ -320,8 +371,8 @@ def compute_reward_budget_outcome_advantage(
 # end new-changes
 
 # new-changes:
-@register_adv_est("reward_budget_minus")
-def compute_reward_budget_minus_outcome_advantage(
+@register_adv_est("reward_budget_mean")
+def compute_reward_budget_mean_outcome_advantage(
     token_level_rewards: torch.Tensor,
     response_mask: torch.Tensor,
     index: np.ndarray,
