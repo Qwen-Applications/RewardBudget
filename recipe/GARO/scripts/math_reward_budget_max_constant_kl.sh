@@ -83,7 +83,7 @@ else
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=OpenMath_Reward_Budget_Max_no_KL \
+        trainer.experiment_name=OpenMath_Reward_Budget_Max_Constant_KL \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=0 \
         trainer.nnodes=${NNODES} \

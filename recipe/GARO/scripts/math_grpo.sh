@@ -47,7 +47,7 @@ else
         actor_rollout_ref.actor.kl_loss_coef=0.001 \
         actor_rollout_ref.actor.adaptive_beta.enable=False \
         actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \
-        actor_rollout_ref.actor.adaptive_beta.beta_max=0.005 \
+        actor_rollout_ref.actor.adaptive_beta.beta_max=0.0 \
         actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \

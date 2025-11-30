@@ -96,7 +96,7 @@ else
         reward_model.overlong_buffer.penalty_factor=1.0 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=GARO \
-        trainer.experiment_name=OpenMath_CLIPCov \
+        trainer.experiment_name=OpenMath_KLCov \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=200 \
