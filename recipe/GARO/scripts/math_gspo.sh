@@ -89,7 +89,7 @@ else
         trainer.project_name=GARO \
         trainer.experiment_name=dapo_math_17k_GSPO \
         trainer.logger='["console","wandb"]' \
-        trainer.log_val_generations=0 \
+        trainer.log_val_generations=1000 \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=10 \

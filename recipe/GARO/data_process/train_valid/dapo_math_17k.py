@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python 
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -62,12 +62,20 @@ def parse_args():
         default=1024,
         help="Flush parquet every N samples to limit RAM.",
     )
+    # new-changes: use fixed valid_size by default
+    p.add_argument(
+        "--valid_size",
+        type=int,
+        default=1000,
+        help="Target number of validation examples (used when valid_ratio <= 0).",
+    )
     p.add_argument(
         "--valid_ratio",
         type=float,
-        default=0.1,
-        help="Portion of data used as validation (approximate).",
+        default=0.0,
+        help="Portion of data used as validation (approximate). If <= 0, use valid_size instead.",
     )
+    # end new-changes
     p.add_argument(
         "--seed",
         type=int,
@@ -195,8 +203,13 @@ def main():
             record = build_record({"prompt": prompt_text, "label": label_text})
             total_kept += 1
 
-            # ------- train / valid 随机划分 -------
-            is_valid = rng.random() < args.valid_ratio
+            # ------- train / valid 划分逻辑 -------
+            # 默认用固定 valid_size，若 valid_ratio > 0 则退回比例模式
+            if args.valid_ratio > 0.0:
+                is_valid = rng.random() < args.valid_ratio
+            else:
+                # 优先填满 valid_size，之后全部进 train
+                is_valid = total_valid < args.valid_size
 
             if is_valid:
                 # 写 jsonl

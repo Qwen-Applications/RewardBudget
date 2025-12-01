@@ -106,7 +106,7 @@ else
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}" \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
-        trainer.log_val_generations=0
+        trainer.log_val_generations=1000
     
     # Capture exit status
     TRAINING_STATUS=$?
