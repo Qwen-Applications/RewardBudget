@@ -89,7 +89,7 @@ else
         trainer.log_val_generations=0 \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-        trainer.save_freq=200 \
+        trainer.save_freq=100 \
         trainer.test_freq=50 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
