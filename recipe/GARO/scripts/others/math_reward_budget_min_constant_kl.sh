@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+export VLLM_USE_NCCL_SYMM_MEM=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
@@ -25,7 +26,7 @@ if [ "${RANK}" -ne 0 ]; then
 else
     # Primary node runs training
     export RAY_API_SERVER_ADDRESS="http://localhost:8265"
-    echo "提交reward_budget_max_constant_kl训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
+    echo "提交reward_budget_min_constant_kl训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
     ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
@@ -77,13 +78,13 @@ else
         custom_reward_function.path=recipe/GARO/reward.py \
         custom_reward_function.name=compute_score \
         algorithm.use_kl_in_reward=False \
-        algorithm.adv_estimator=reward_budget_max \
+        algorithm.adv_estimator=reward_budget_min \
         algorithm.ref_sync_freq=20000000 \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
-        trainer.total_epochs=10 \
+        trainer.total_epochs=20 \
         trainer.project_name=GARO \
-        trainer.experiment_name=OpenMath_Reward_Budget_Max_Constant_KL \
+        trainer.experiment_name=OpenMath_Reward_Budget_Min_Constant_KL \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=0 \
         trainer.nnodes=${NNODES} \

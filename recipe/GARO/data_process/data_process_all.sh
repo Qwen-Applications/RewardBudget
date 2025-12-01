@@ -1,5 +1,6 @@
 # 训练/验证数据集: ${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/
 TRAIN_DIR="${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/"
+python recipe/GARO/data_process/train_valid/dapo_math_17k.py --train_data_dir ${TRAIN_DIR} --valid_data_dir ${TRAIN_DIR} --tokenizer=Qwen/Qwen3-8B
 python recipe/GARO/data_process/train_valid/openmath.py --train_data_dir ${TRAIN_DIR} --valid_data_dir ${TRAIN_DIR} --tokenizer=Qwen/Qwen3-8B
 python recipe/GARO/data_process/train_valid/openscience.py --train_data_dir ${TRAIN_DIR} --valid_data_dir ${TRAIN_DIR} --tokenizer=Qwen/Qwen3-8B
 
