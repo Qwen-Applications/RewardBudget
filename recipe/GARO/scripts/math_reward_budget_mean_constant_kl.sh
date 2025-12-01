@@ -53,7 +53,7 @@ else
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.actor.optim.lr_scheduler_type=constant \
-        actor_rollout_ref.actor.optim.total_training_steps=2000 \
+        actor_rollout_ref.actor.optim.total_training_steps=1000 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.actor.loss_agg_mode="seq-mean-token-mean" \
@@ -89,8 +89,8 @@ else
         trainer.log_val_generations=0 \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-        trainer.save_freq=100 \
-        trainer.test_freq=50 \
+        trainer.save_freq=10 \
+        trainer.test_freq=1 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
     # Capture exit status

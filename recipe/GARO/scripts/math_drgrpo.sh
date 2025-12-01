@@ -54,7 +54,7 @@ else
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.actor.optim.lr_scheduler_type=constant \
-        actor_rollout_ref.actor.optim.total_training_steps=2000 \
+        actor_rollout_ref.actor.optim.total_training_steps=1000 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.actor.checkpoint.save_contents='["model","optimizer","extra","hf_model"]' \
@@ -83,15 +83,15 @@ else
         algorithm.norm_adv_by_std_in_grpo=False \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
-        trainer.total_epochs=20 \
+        trainer.total_epochs=10 \
         trainer.project_name=GARO \
         trainer.experiment_name=dapo_math_17k_DRGRPO \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=0 \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-        trainer.save_freq=100 \
-        trainer.test_freq=50 \
+        trainer.save_freq=10 \
+        trainer.test_freq=1 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
     # Capture exit status
