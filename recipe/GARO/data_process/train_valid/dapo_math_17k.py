@@ -62,7 +62,6 @@ def parse_args():
         default=1024,
         help="Flush parquet every N samples to limit RAM.",
     )
-    # new-changes: use fixed valid_size by default
     p.add_argument(
         "--valid_size",
         type=int,
@@ -75,7 +74,6 @@ def parse_args():
         default=0.0,
         help="Portion of data used as validation (approximate). If <= 0, use valid_size instead.",
     )
-    # end new-changes
     p.add_argument(
         "--seed",
         type=int,
@@ -84,6 +82,14 @@ def parse_args():
     )
 
     return p.parse_args()
+
+
+def is_int(label: str):
+    try:
+        int(label)
+        return True
+    except ValueError:
+        return False
 
 
 def build_record(example: Dict[str, Any]) -> Dict[str, Any]:
@@ -189,7 +195,7 @@ def main():
                 continue
 
             # 过滤 label 非整数的数据
-            if not label_text.isdigit():
+            if not is_int(label_text):
                 skipped_prompt += 1
                 continue
 
