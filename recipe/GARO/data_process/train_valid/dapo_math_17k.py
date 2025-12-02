@@ -166,15 +166,15 @@ def main():
     total_kept = 0
     total_train = 0
     total_valid = 0
-    skipped_long_prompt = 0
+    skipped_prompt = 0
     skipped_long_response = 0
 
     try:
         for example in ds_iter:
             total_seen += 1
 
-            # ------- 长度过滤 -------
-            prompt_text: str = example["prompt"]
+            # ------- 过滤 -------
+            prompt_text: str = example["prompt"]["content"]
             label_text: str = example["label"]
 
             # 计算 prompt token 长度
@@ -185,10 +185,14 @@ def main():
             )["input_ids"]
 
             if len(prompt_ids) > args.max_prompt_length:
-                skipped_long_prompt += 1
+                skipped_prompt += 1
                 continue
 
-            # 这里 response 是空串，但保留逻辑方便以后复用脚本
+            # 过滤 label 非整数的数据
+            if not label_text.isdigit():
+                skipped_prompt += 1
+                continue
+
             response_text = ""
             if response_text:
                 response_ids = tokenizer(
@@ -251,7 +255,7 @@ def main():
     print(f"  Kept after length filter:    {total_kept}")
     print(f"    -> Train:                  {total_train}")
     print(f"    -> Valid:                  {total_valid}")
-    print(f"  Skipped (prompt too long):   {skipped_long_prompt}")
+    print(f"  Skipped (prompt too long):   {skipped_prompt}")
     print(f"  Skipped (response too long): {skipped_long_response}")
     print(f"  Valid ratio (effective):     {total_valid / max(1, total_kept):.4f}")
 
