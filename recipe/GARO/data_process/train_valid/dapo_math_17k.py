@@ -180,7 +180,7 @@ def main():
             total_seen += 1
 
             # ------- 过滤 -------
-            prompt_text: str = example["prompt"]["content"]
+            prompt_text: str = example["prompt"][0]["content"]
             label_text: str = example["label"]
 
             # 计算 prompt token 长度
