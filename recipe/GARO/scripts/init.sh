@@ -3,6 +3,7 @@
 
 # bash scripts/install_vllm_sglang_mcore.sh
 pip install --no-deps -e .
+pip install latex2sympy2-extended
 
 wandb login REDACTED_WANDB_KEY
 hf auth login --token REDACTED_HF_TOKEN
