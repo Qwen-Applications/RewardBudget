@@ -53,7 +53,7 @@ else
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.actor.optim.lr_scheduler_type=constant \
-        actor_rollout_ref.actor.optim.total_training_steps=1000 \
+        actor_rollout_ref.actor.optim.total_training_steps=3000 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.actor.checkpoint.save_contents='["model","optimizer","extra","hf_model"]' \
