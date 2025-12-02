@@ -261,9 +261,6 @@ def main():
     print(f"  Kept after length filter:    {total_kept}")
     print(f"    -> Train:                  {total_train}")
     print(f"    -> Valid:                  {total_valid}")
-    print(f"  Skipped (prompt too long):   {skipped_prompt}")
-    print(f"  Skipped (response too long): {skipped_long_response}")
-    print(f"  Valid ratio (effective):     {total_valid / max(1, total_kept):.4f}")
 
 
 if __name__ == "__main__":
