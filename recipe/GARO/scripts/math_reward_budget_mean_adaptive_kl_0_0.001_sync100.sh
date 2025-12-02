@@ -35,7 +35,7 @@ else
         data.val_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
-        data.train_batch_size=128 \
+        data.train_batch_size=32 \
         actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \
@@ -47,8 +47,8 @@ else
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.kl_loss_coef=0.001 \
         actor_rollout_ref.actor.adaptive_beta.enable=True \
-        actor_rollout_ref.actor.adaptive_beta.beta_min=0.001 \
-        actor_rollout_ref.actor.adaptive_beta.beta_max=0.005 \
+        actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \
+        actor_rollout_ref.actor.adaptive_beta.beta_max=0.001 \
         actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
@@ -79,7 +79,7 @@ else
         custom_reward_function.name=compute_score \
         algorithm.use_kl_in_reward=False \
         algorithm.adv_estimator=reward_budget_mean \
-        algorithm.ref_sync_freq=50 \
+        algorithm.ref_sync_freq=100 \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \

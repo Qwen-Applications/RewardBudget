@@ -1624,20 +1624,6 @@ def compute_adaptive_beta_per_sample(
     default_beta: float,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    """
-    Compute per-sample beta for KL loss:
-
-    For each prompt group (size G):
-      r_i in {0,1} from raw binary reward
-      if all r_i are 0 or all 1 -> skip (use default_beta)
-      p = (# r_i > 0) / G
-      n_eff = 1 / (G * sum_i r_i^2)
-      s = 4 p (1-p) n_eff
-      beta_g = beta_min + (beta_max - beta_min) * s
-
-    Return:
-      beta_per_sample: (bs,) tensor aligned with batch order.
-    """
     device = token_level_scores.device
 
     # scalar reward per response (bs,)

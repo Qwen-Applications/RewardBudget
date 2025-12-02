@@ -35,7 +35,7 @@ else
         data.val_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
-        data.train_batch_size=128 \
+        data.train_batch_size=32 \
         data.gen_batch_size=384 \
         data.prompt_key=prompt \
         data.truncation='left' \
