@@ -100,8 +100,8 @@ else
         trainer.experiment_name=dapo_math_17k_KLCov \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-        trainer.save_freq=10 \
-        trainer.test_freq=1 \
+        trainer.save_freq=25 \
+        trainer.test_freq=5 \
         trainer.total_epochs=10 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}" \
         trainer.log_train_entropy_during_val=True \
