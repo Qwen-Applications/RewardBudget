@@ -31,8 +31,8 @@ else
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
         python -m verl.trainer.main_ppo \
-        data.train_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_train.parquet" \
-        data.val_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_valid.parquet" \
+        data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+        data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
@@ -84,7 +84,7 @@ else
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=dapo_math_17k_Reward_Budget_Mean_no_KL \
+        trainer.experiment_name=OpenMathReasoning_Reward_Budget_Mean_Adaptive_KL_0.001_0.005 \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=1000 \
         trainer.nnodes=${NNODES} \

@@ -31,8 +31,8 @@ else
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
         python -m verl.trainer.main_ppo \
-        data.train_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_train.parquet" \
-        data.val_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_valid.parquet" \
+        data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+        data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
@@ -48,7 +48,7 @@ else
         actor_rollout_ref.actor.kl_loss_coef=0.0 \
         actor_rollout_ref.actor.adaptive_beta.enable=False \
         actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \
-        actor_rollout_ref.actor.adaptive_beta.beta_max=0.005 \
+        actor_rollout_ref.actor.adaptive_beta.beta_max=0.0 \
         actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
@@ -87,7 +87,7 @@ else
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=dapo_math_17k_GSPO \
+        trainer.experiment_name=OpenMathReasoning_GSPO \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=1000 \
         trainer.nnodes=${NNODES} \
