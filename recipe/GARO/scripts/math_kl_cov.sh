@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export VLLM_USE_NCCL_SYMM_MEM=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -31,8 +32,8 @@ else
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
         python -m recipe.entropy.main_entropy \
-        data.train_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_train.parquet" \
-        data.val_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_valid.parquet" \
+        data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+        data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
@@ -97,7 +98,7 @@ else
         reward_model.overlong_buffer.penalty_factor=1.0 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=GARO \
-        trainer.experiment_name=dapo_math_17k_KLCov \
+        trainer.experiment_name=OpenMathReasoning_KLCov \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=25 \

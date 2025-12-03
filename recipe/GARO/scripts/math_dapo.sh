@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export VLLM_USE_NCCL_SYMM_MEM=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -31,8 +32,8 @@ else
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
         python -m recipe.dapo.main_dapo \
-        data.train_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_train.parquet" \
-        data.val_files="${DATA_DIR}/GARO/train_data/dapo_math_17k_valid.parquet" \
+        data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
+        data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
@@ -94,7 +95,7 @@ else
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=dapo_math_17k_DAPO \
+        trainer.experiment_name=OpenMathReasoning_DAPO \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=1000 \
         trainer.nnodes=${NNODES} \
