@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export VLLM_USE_NCCL_SYMM_MEM=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_ENABLE_HF_TRANSFER=0
