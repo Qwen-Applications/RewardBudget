@@ -7,6 +7,7 @@ import os
 from typing import Any, Optional
 
 import torch
+import pyarrow.parquet as pq
 
 from recipe.GARO.reward import compute_score
 
@@ -29,6 +30,29 @@ def local_mkdir(path: str) -> str:
 
     return path
 
+def _iter_records(file_path: str):
+    ext = os.path.splitext(file_path)[1].lower()
+
+    # --- JSONL 模式 ---
+    if ext in [".jsonl", ".json"]:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                yield json.loads(line)
+    # --- Parquet 模式 ---
+    elif ext == ".parquet":
+        table = pq.read_table(file_path)
+        cols = table.to_pydict()         # dict: col_name -> list
+        n = table.num_rows
+
+        for i in range(n):
+            row = {k: v[i] for k, v in cols.items()}
+            yield row
+    else:
+        raise ValueError(f"Unsupported file extension for {file_path}")
+
 def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None) -> None:
     if k <= 0:
         raise ValueError(f"k must be positive, got k={k}")
@@ -37,45 +61,37 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None) ->
     pass1_correct = 0.0
     passk_correct = 0.0  # pass@k: 看前 k 个 responses 是否有至少一个答对
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    for obj in _iter_records(file_path):
+        responses = obj["responses"]                       # list[str]
+        gt = obj["reward_model"]["ground_truth"]           # str
+        data_source: str = obj.get("data_source", "unknown")
 
-            obj = json.loads(line)
+        if not responses:
+            continue
 
-            # 已知你的数据结构是固定的，不做健壮处理
-            responses = obj["responses"]                       # list[str]
-            gt = obj["reward_model"]["ground_truth"]           # str
-            data_source: str = obj.get("data_source", "unknown")
+        total += 1
 
-            if not responses:
-                continue
+        # ----- pass@1: 只看 responses[0] -----
+        pass1_correct += compute_score(
+            data_source=data_source,
+            solution_str=responses[0],
+            ground_truth=gt,
+        )
 
-            total += 1
-
-            # ----- pass@1: 只看 responses[0] -----
-            pass1_correct += compute_score(
+        # ----- pass@k: 只看前 k 个 responses，有一个对就算 1 -----
+        num_to_use = min(k, len(responses))
+        any_correct_k = 0.0
+        for sol in responses[:num_to_use]:
+            score = compute_score(
                 data_source=data_source,
-                solution_str=responses[0],
+                solution_str=sol,
                 ground_truth=gt,
             )
+            if score > 0:
+                any_correct_k = 1.0
+                break
 
-            # ----- pass@k: 只看前 k 个 responses，有一个对就算 1 -----
-            num_to_use = min(k, len(responses))
-            any_correct_k = 0.0
-            for sol in responses[:num_to_use]:
-                score = compute_score(
-                    data_source=data_source,
-                    solution_str=sol,
-                    ground_truth=gt,
-                )
-                if score > 0:
-                    any_correct_k = 1.0
-                    break
-
-            passk_correct += any_correct_k
+        passk_correct += any_correct_k
 
     if total == 0:
         print("No valid samples found in file.")
@@ -93,8 +109,12 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None) ->
     if output_path is None:
         output_path = "recipe/GARO/evaluation_results.json"
 
+    base_name = os.path.basename(file_path)          # e.g. "drgrpo_math500.parquet"
+    file_stem, _ = os.path.splitext(base_name)      # e.g. "drgrpo_math500"
+
     metrics = {
         "file": file_path,
+        "file_name": file_stem,
         "total_samples": total,
         "k": k,
         "pass_at_1": {
