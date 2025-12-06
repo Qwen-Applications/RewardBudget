@@ -46,6 +46,33 @@ echo "[INFO] Data path: $DATA_PATH"
 echo "[INFO] Output path: ${OUTPUT_PATH}"
 echo "[INFO] Checkpoint path: ${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
 
+# =========================
+# new-changes: print first row for debug
+python - <<PY
+import pyarrow.parquet as pq
+
+path = "${DATA_PATH}"
+print("[DEBUG] Parquet path:", path)
+
+pf = pq.ParquetFile(path)
+print("[DEBUG] Schema:")
+print(pf.schema)
+
+# 读取前1行
+table = pf.read_row_groups([0], columns=None).slice(0, 1)
+rows = table.to_pylist()
+if not rows:
+    print("[DEBUG] Empty parquet!")
+else:
+    row = rows[0]
+    print("[DEBUG] First row keys:", list(row.keys()))
+    print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
+    print("[DEBUG] First row extra_info type:", type(row.get("extra_info")).__name__)
+    print("[DEBUG] First row extra_info value:", row.get("extra_info"))
+PY
+# end new-changes
+# =========================
+
 # Generate responses
 python -m verl.trainer.main_generation \
   trainer.nnodes=${NNODES} \
