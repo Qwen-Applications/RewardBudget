@@ -3,7 +3,7 @@
 
 import os
 import json
-import glob
+import argparse
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -25,68 +25,78 @@ TASKS = [
     "OlympiadBench_physics_zh_cee",
 ]
 
-def prompt_to_content(p):
-    if isinstance(p, str):
-        return p
-    try:
-        return json.dumps(p, ensure_ascii=False)
-    except Exception:
-        return str(p)
-
-def list_parquet_files(path: str):
-    # 关键修复：兼容 “xxx.parquet 是目录”的情况
-    if os.path.isdir(path):
-        files = sorted(glob.glob(os.path.join(path, "*.parquet")))
-        return files
-    return [path]
-
 def main():
-    test_dir = os.path.join(DATA_DIR, "GARO", "test_data")
+    parser = argparse.ArgumentParser()
+    # new-changes: make input optional for batch mode
+    parser.add_argument("--input", "-i", required=False, help="Path to input .jsonl")
+    parser.add_argument("--output", "-o", default=None, help="Path to output .parquet")
+    args = parser.parse_args()
 
-    extra_type = pa.list_(
-        pa.struct([
-            ("role", pa.string()),
-            ("content", pa.string()),
-        ])
-    )
+    def process_one(in_path: str, out_path: str):
+        if os.path.isdir(out_path):
+            raise ValueError(
+                f"Output path is a directory, not a file: {out_path}\n"
+                f"Please provide a file path like xxx.parquet"
+            )
 
-    for task in TASKS:
-        path = os.path.join(test_dir, f"{task}.parquet")
-        if not os.path.exists(path):
-            print(f"[SKIP] not found: {path}")
-            continue
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-        shard_files = list_parquet_files(path)
-        if not shard_files:
-            print(f"[SKIP] no parquet shards under: {path}")
-            continue
+        records = []
+        with open(in_path, "r", encoding="utf-8") as f:
+            for line_no, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception as e:
+                    raise ValueError(f"Invalid JSON at line {line_no}: {e}")
 
-        for fp in shard_files:
-            # 用 ParquetFile 读单文件，避免 dataset unify
-            table = pq.ParquetFile(fp).read()
+                prompt = obj.get("prompt", "")
+                # 保证 content 是 string
+                if not isinstance(prompt, str):
+                    prompt = json.dumps(prompt, ensure_ascii=False)
 
-            if "prompt" not in table.column_names:
-                print(f"[WARN] no prompt col: {fp}")
+                # 直接新增/覆盖 extra_info
+                obj["extra_info"] = [{"role": "user", "content": prompt}]
+
+                records.append(obj)
+
+        table = pa.Table.from_pylist(records)
+
+        # 直接覆盖写
+        pq.write_table(table, out_path)
+
+        print(f"[OK] {in_path} -> {out_path}, rows={table.num_rows}")
+
+    # new-changes: batch mode when --input is not provided
+    if not args.input:
+        test_dir = os.path.join(DATA_DIR, "GARO", "test_data")
+        for task in TASKS:
+            in_path = os.path.join(test_dir, f"{task}.jsonl")
+            out_path = os.path.join(test_dir, f"{task}.parquet")
+
+            if not os.path.exists(in_path):
+                print(f"[SKIP] not found: {in_path}")
                 continue
 
-            # 如果你非常确定源文件都没有 extra_info，这个判断可删
-            if "extra_info" in table.column_names:
-                print(f"[SKIP] already has extra_info: {fp}")
-                continue
+            process_one(in_path, out_path)
 
-            prompts = table["prompt"].to_pylist()
-            extras = [
-                [{"role": "user", "content": prompt_to_content(p)}]
-                for p in prompts
-            ]
+        print("[DONE]")
+        return
+    # end new-changes
 
-            table = table.append_column("extra_info", pa.array(extras, type=extra_type))
+    # 原单文件逻辑保持不变
+    in_path = args.input
+    if args.output:
+        out_path = args.output
+    else:
+        # 默认同名输出：xxx.jsonl -> xxx.parquet
+        base, _ = os.path.splitext(in_path)
+        out_path = base + ".parquet"
 
-            # 直接覆盖 shard 文件
-            pq.write_table(table, fp)
-            print(f"[OK] overwritten: {fp}")
+    process_one(in_path, out_path)
 
-    print("[DONE]")
 
 if __name__ == "__main__":
     main()
