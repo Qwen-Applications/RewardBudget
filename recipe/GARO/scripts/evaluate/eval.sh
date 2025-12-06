@@ -59,7 +59,8 @@ python -m verl.trainer.main_generation \
   rollout.temperature=0.0 \
   rollout.top_p=1.0 \
   rollout.prompt_length=1024 \
-  rollout.response_length=8192
+  rollout.response_length=8192 \
+  +rollout.pipeline_model_parallel_size=1
 
 # Evaluate results
 python3 recipe/GARO/evaluation.py \
