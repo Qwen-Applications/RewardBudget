@@ -16,8 +16,8 @@ TASK=$1
 MODEL=$2
 STEP=$3
 JOB_ID=$4
-DATA_DIR=${4:-"/primus_datasets/zmy"}
-OUTPUT_DIR=${5:-${PRIMUS_OUTPUT_DIR}}
+DATA_DIR=${5:-"/primus_datasets/zmy"}
+OUTPUT_DIR=${6:-${PRIMUS_OUTPUT_DIR}}
 
 # Validate inputs
 if [ -z "$OUTPUT_DIR" ]; then
@@ -47,9 +47,10 @@ CHECKPOINT_DIR=$(echo "$PRIMUS_SAVE_CHECKPOINT_DIR" | awk -F'/' -v job_id="$JOB_
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_DIR}/GARO"
 
-echo "[INFO] Running evaluation for task: $TASK, model: $MODEL, step: $STEP"
+echo "[INFO] Running evaluation for task: $TASK, model: $MODEL, step: $STEP, job: $JOB_ID"
 echo "[INFO] Data path: $DATA_PATH"
 echo "[INFO] Output path: ${OUTPUT_PATH}"
+echo "[INFO] Checkpoint path: ${CHECKPOINT_DIR}/global_step_${STEP}"
 
 # Generate responses
 python -m verl.trainer.main_generation \
