@@ -51,7 +51,7 @@ python -m verl.trainer.main_generation \
   trainer.nnodes=${NNODES} \
   trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
   data.path=${DATA_PATH} \
-  data.prompt_key=prompt \
+  data.prompt_key=extra_info \
   data.n_samples=1 \
   data.output_path=${OUTPUT_PATH} \
   model.path=${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface \
