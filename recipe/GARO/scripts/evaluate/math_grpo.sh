@@ -1,6 +1,8 @@
 # Evaluate ${PRIMUS_SAVE_CHECKPOINT_DIR} using unified eval.sh script
 
 DATA_DIR="/primus_datasets/zmy"
+STEP=525
+JOB_ID="primus4f2f04826b2672000567e79c7z"
 
 # List of tasks to evaluate
 TASKS=(
@@ -25,7 +27,7 @@ for TASK in "${TASKS[@]}"; do
     echo "==================== Evaluating task: $TASK ===================="
     
     # Run the unified evaluation script
-    bash recipe/GARO/scripts/evaluate/eval.sh "$TASK" "grpo" 525 "${DATA_DIR}" "${PRIMUS_OUTPUT_DIR}"
+    bash recipe/GARO/scripts/evaluate/eval.sh "$TASK" "grpo" "${STEP}" "${JOB_ID}" "${DATA_DIR}" "${PRIMUS_OUTPUT_DIR}"
     
     echo "==================== Finished task: $TASK ===================="
 done

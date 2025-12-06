@@ -15,12 +15,9 @@ fi
 TASK=$1
 MODEL=$2
 STEP=$3
+JOB_ID=$4
 DATA_DIR=${4:-"/primus_datasets/zmy"}
 OUTPUT_DIR=${5:-${PRIMUS_OUTPUT_DIR}}
-
-# Define data paths based on task
-DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
-OUTPUT_PATH="${OUTPUT_DIR}/GARO/${TASK}_${MODEL}_${STEP}.parquet"
 
 # Validate inputs
 if [ -z "$OUTPUT_DIR" ]; then
@@ -32,6 +29,20 @@ if [ -z "$PRIMUS_SAVE_CHECKPOINT_DIR" ]; then
     echo "Error: PRIMUS_SAVE_CHECKPOINT_DIR not set"
     exit 1
 fi
+
+
+# Define data paths based on task
+DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
+OUTPUT_PATH="${OUTPUT_DIR}/GARO/${TASK}_${MODEL}_${STEP}.parquet"
+
+# Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
+CHECKPOINT_DIR=$(echo "$PRIMUS_SAVE_CHECKPOINT_DIR" | awk -F'/' -v job_id="$JOB_ID" '{
+    for(i=1; i<=NF; i++) {
+        if(i == NF-1) printf "/" job_id
+        else printf "/" $i
+    }
+    print ""
+}' | sed 's|^/||')
 
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_DIR}/GARO"
@@ -48,7 +59,7 @@ python -m verl.trainer.main_generation \
   data.prompt_key=prompt \
   data.n_samples=1 \
   data.output_path=${OUTPUT_PATH} \
-  actor_rollout_ref.model.path=${PRIMUS_SAVE_CHECKPOINT_DIR}/global_step_${STEP} \
+  actor_rollout_ref.model.path=${CHECKPOINT_DIR}/global_step_${STEP} \
   +actor_rollout_ref.model.trust_remote_code=True \
   rollout.temperature=0.0 \
   rollout.top_p=1.0 \
