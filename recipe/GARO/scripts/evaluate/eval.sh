@@ -54,8 +54,8 @@ python -m verl.trainer.main_generation \
   data.prompt_key=prompt \
   data.n_samples=1 \
   data.output_path=${OUTPUT_PATH} \
-  +actor_rollout_ref.model.path=${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface \
-  +actor_rollout_ref.model.trust_remote_code=True \
+  model.path=${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface \
+  +model.trust_remote_code=True \
   rollout.temperature=0.0 \
   rollout.top_p=1.0 \
   rollout.prompt_length=1024 \
