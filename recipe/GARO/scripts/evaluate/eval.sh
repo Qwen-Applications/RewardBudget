@@ -34,17 +34,20 @@ fi
 # Define data paths based on task
 DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
 OUTPUT_PATH="${OUTPUT_DIR}/GARO/${TASK}_${MODEL}_${STEP}.parquet"
+EVAL_PATH=${OUTPUT_DIR}/GARO/eval_${MODEL}_${STEP}.json
 
 # Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
 CHECKPOINT_DIR="/primus_oss_root/repository/quark_sft/${JOB_ID}/save_checkpoint"
+CHECKPOINT_PATH="${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
 
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_DIR}/GARO"
 
 echo "[INFO] Running evaluation for task: $TASK, model: $MODEL, step: $STEP, job: $JOB_ID"
 echo "[INFO] Data path: $DATA_PATH"
+echo "[INFO] Checkpoint path: ${CHECKPOINT_PATH}"
 echo "[INFO] Output path: ${OUTPUT_PATH}"
-echo "[INFO] Checkpoint path: ${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
+echo "[INFO] Evaluation path: ${EVAL_PATH}"
 
 # Generate responses
 python -m verl.trainer.main_generation \
@@ -54,7 +57,7 @@ python -m verl.trainer.main_generation \
   data.prompt_key=extra_info \
   data.n_samples=1 \
   data.output_path=${OUTPUT_PATH} \
-  model.path=${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface \
+  model.path=${CHECKPOINT_PATH} \
   +model.trust_remote_code=True \
   rollout.temperature=0.0 \
   rollout.top_p=1.0 \
@@ -65,6 +68,6 @@ python -m verl.trainer.main_generation \
 # Evaluate results
 python3 recipe/GARO/evaluation.py \
   --file ${OUTPUT_PATH} --k 1 \
-  --output ${OUTPUT_DIR}/GARO/eval_${MODEL}_${STEP}.json
+  --output ${EVAL_PATH}
 
-echo "[INFO] Evaluation completed. Results saved to ${OUTPUT_DIR}/GARO/eval_${MODEL}_${STEP}.json"
+echo "[INFO] Evaluation completed. Results saved to ${EVAL_PATH}"
