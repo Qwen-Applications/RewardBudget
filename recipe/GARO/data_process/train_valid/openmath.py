@@ -32,18 +32,14 @@ import argparse
 import json
 from pathlib import Path
 
-from datasets import load_dataset
-from transformers import AutoTokenizer
 import pyarrow as pa
 import pyarrow.parquet as pq
+from datasets import load_dataset
 from tqdm import tqdm
-
+from transformers import AutoTokenizer
 
 # Use raw string to avoid \b being interpreted as backspace.
-PROMPT_PREFIX = r(
-    "Solve the following problem. Make sure to put the answer "
-    "(and only answer) inside \boxed{}. "
-)
+PROMPT_PREFIX = R"Solve the following problem. Make sure to put the answer (and only answer) inside \boxed{}. "
 
 
 def parse_args():
