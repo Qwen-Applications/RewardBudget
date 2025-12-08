@@ -70,8 +70,8 @@ else:
     row = rows[0]
     print("[DEBUG] First row keys:", list(row.keys()))
     print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
-    print("[DEBUG] First row extra_info type:", type(row.get("extra_info")).__name__)
-    print("[DEBUG] First row extra_info value:", row.get("extra_info"))
+    print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
+    print("[DEBUG] First row prompt value:", row.get("prompt"))
 PY
 # end new-changes
 # =========================
@@ -81,7 +81,7 @@ python -m verl.trainer.main_generation \
   trainer.nnodes=${NNODES} \
   trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
   data.path=${DATA_PATH} \
-  data.prompt_key=extra_info \
+  data.prompt_key=prompt \
   data.n_samples=1 \
   data.output_path=${OUTPUT_PATH} \
   model.path=${CHECKPOINT_PATH} \
@@ -90,7 +90,7 @@ python -m verl.trainer.main_generation \
   rollout.top_p=1.0 \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
-  +rollout.pipeline_model_parallel_size=1
+  rollout.tensor_model_parallel_size=${NNODES}*${NUM_ACCELERATORS}
 
 # Evaluate results
 python3 recipe/GARO/evaluation.py \
