@@ -11,7 +11,8 @@ Input keys:
   output: str
 
 Output keys:
-  prompt: data["input"]
+  prompt: HF chat template format (list of {role, content})
+          content = data["input"]
   response: data["output"]
   reward_model: {"ground_truth": data["expected_answer"]}
   data_source: "OpenScience"
@@ -58,8 +59,12 @@ def parse_args():
 
 
 def make_schema():
+    prompt_struct = pa.struct([
+        ("role", pa.string()),
+        ("content", pa.string())
+    ])
     return pa.schema([
-        ("prompt", pa.string()),
+        ("prompt", pa.list_(prompt_struct)),
         ("response", pa.string()),
         ("reward_model", pa.struct([("ground_truth", pa.string())])),
         ("data_source", pa.string()),
@@ -73,6 +78,27 @@ def flush_buf(buf, writer, schema):
     table = pa.Table.from_pylist(buf, schema=schema)
     writer.write_table(table)
     buf.clear()
+
+
+def _get_prompt_len(tokenizer, prompt_messages, fallback_text: str):
+    """
+    Compute prompt token length using chat template if available.
+    Fallback to plain encode on text.
+    """
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            ids = tokenizer.apply_chat_template(
+                prompt_messages,
+                tokenize=True,
+                add_generation_prompt=False
+            )
+            if isinstance(ids, dict) and "input_ids" in ids:
+                ids = ids["input_ids"]
+            return len(ids)
+        except Exception:
+            pass
+
+    return len(tokenizer.encode(fallback_text, add_special_tokens=False))
 
 
 def main():
@@ -112,20 +138,24 @@ def main():
         pbar = tqdm(ds, desc="Streaming + filtering + split", unit="ex")
         for ex in pbar:
             seen += 1
-            prompt = ex.get("input")
+            prompt_text = ex.get("input")
             response = ex.get("output")
             gt = ex.get("expected_answer")
-            if prompt is None or response is None or gt is None:
+            if prompt_text is None or response is None or gt is None:
                 continue
 
+            prompt_messages = [
+                {"role": "user", "content": prompt_text}
+            ]
+
             # token length filtering
-            prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
+            prompt_len = _get_prompt_len(tokenizer, prompt_messages, prompt_text)
             resp_len = len(tokenizer.encode(response, add_special_tokens=False))
             if prompt_len > args.max_prompt_length or resp_len > args.max_response_length:
                 continue
 
             row = {
-                "prompt": prompt,
+                "prompt": prompt_messages,
                 "response": response,
                 "reward_model": {"ground_truth": gt},
                 "data_source": "OpenScience",

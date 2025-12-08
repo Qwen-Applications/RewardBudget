@@ -11,7 +11,8 @@ HF fields (for cot/tir/genselect splits):
   pass_rate_72b_tir: str (float string or "n/a")
 
 Output fields:
-  prompt: "Solve the following problem. Make sure to put the answer (and only answer) inside \boxed{}. " + problem
+  prompt: HF chat template format (list of {role, content})
+          content = "Solve the following problem. Make sure to put the answer (and only answer) inside \\boxed{}. " + problem
   response: generated_solution
   reward_model: {"ground_truth": expected_answer}
   data_source: "OpenMath"
@@ -38,7 +39,8 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 
-PROMPT_PREFIX = (
+# Use raw string to avoid \b being interpreted as backspace.
+PROMPT_PREFIX = r(
     "Solve the following problem. Make sure to put the answer "
     "(and only answer) inside \boxed{}. "
 )
@@ -72,8 +74,13 @@ def parse_args():
 
 
 def make_schema():
+    # prompt is a list of {role, content}
+    prompt_struct = pa.struct([
+        ("role", pa.string()),
+        ("content", pa.string()),
+    ])
     return pa.schema([
-        ("prompt", pa.string()),
+        ("prompt", pa.list_(prompt_struct)),
         ("response", pa.string()),
         ("reward_model", pa.struct([("ground_truth", pa.string())])),
         ("data_source", pa.string()),
@@ -88,6 +95,27 @@ def flush_buf(buf, writer, schema):
     table = pa.Table.from_pylist(buf, schema=schema)
     writer.write_table(table)
     buf.clear()
+
+
+def _get_prompt_len(tokenizer, prompt_messages, fallback_text: str):
+    """
+    Compute prompt token length using chat template if available.
+    Fallback to plain encode on text.
+    """
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            ids = tokenizer.apply_chat_template(
+                prompt_messages,
+                tokenize=True,
+                add_generation_prompt=False
+            )
+            # Some tokenizers may return dict-like outputs
+            if isinstance(ids, dict) and "input_ids" in ids:
+                ids = ids["input_ids"]
+            return len(ids)
+        except Exception:
+            pass
+    return len(tokenizer.encode(fallback_text, add_special_tokens=False))
 
 
 def main():
@@ -153,16 +181,19 @@ def main():
                 if pr >= args.max_pass_rate or pr <= args.min_pass_rate:
                     continue
 
-                prompt = PROMPT_PREFIX + problem
+                prompt_text = PROMPT_PREFIX + problem
+                prompt_messages = [
+                    {"role": "user", "content": prompt_text}
+                ]
 
                 # token length filtering
-                prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
+                prompt_len = _get_prompt_len(tokenizer, prompt_messages, prompt_text)
                 resp_len = len(tokenizer.encode(response, add_special_tokens=False))
                 if prompt_len > args.max_prompt_length or resp_len > args.max_response_length:
                     continue
 
                 row = {
-                    "prompt": prompt,
+                    "prompt": prompt_messages,
                     "response": response,
                     "reward_model": {"ground_truth": gt_stripped},
                     "data_source": "OpenMath",

@@ -1,4 +1,4 @@
-#!/usr/bin/env python 
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -92,18 +92,47 @@ def is_int(label: str):
         return False
 
 
-def build_record(example: Dict[str, Any]) -> Dict[str, Any]:
+def build_record(prompt_messages: List[Dict[str, Any]], label_text: str) -> Dict[str, Any]:
     """
     将原始 example 映射为目标结构。
-    原始字段：prompt: str, label: str
+    原始字段：prompt: chat template (list of dict), label: str
+
+    输出：
+      prompt: chat template
+      response: ""
+      reward_model.ground_truth: label
     """
     return {
-        "prompt": example["prompt"],
+        "prompt": prompt_messages,
         "response": "",
-        "reward_model": {"ground_truth": example["label"]},
+        "reward_model": {"ground_truth": label_text},
         "ability": "math",
         "data_source": "dapo-math-17k",
     }
+
+
+def _prompt_token_len(tokenizer, prompt_messages: List[Dict[str, Any]], fallback_text: str) -> int:
+    """
+    优先按 chat_template 计算长度；失败则回退到纯文本编码。
+    """
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            ids = tokenizer.apply_chat_template(
+                prompt_messages,
+                tokenize=True,
+                add_generation_prompt=False,
+            )
+            if isinstance(ids, dict) and "input_ids" in ids:
+                ids = ids["input_ids"]
+            return len(ids)
+        except Exception:
+            pass
+
+    return len(tokenizer(
+        fallback_text,
+        add_special_tokens=False,
+        truncation=False,
+    )["input_ids"])
 
 
 def flush_buffer_to_parquet(
@@ -179,23 +208,34 @@ def main():
         for example in ds_iter:
             total_seen += 1
 
-            # ------- 过滤 -------
-            prompt_text: str = example["prompt"][0]["content"]
-            label_text: str = example["label"]
+            # ------- 读取原始字段 -------
+            prompt_messages = example.get("prompt")
+            label_text: str = example.get("label")
 
-            # 计算 prompt token 长度
-            prompt_ids = tokenizer(
-                prompt_text,
-                add_special_tokens=False,
-                truncation=False,
-            )["input_ids"]
+            # 基本健壮性检查
+            if not isinstance(prompt_messages, list) or not prompt_messages:
+                skipped_prompt += 1
+                continue
 
-            if len(prompt_ids) > args.max_prompt_length:
+            # 你原来只取了第一个 content 来算长度；
+            # 这里保留一个 fallback_text，避免 apply_chat_template 不可用时崩。
+            # 简单策略：拼接所有 content。
+            fallback_text = "\n".join(
+                str(m.get("content", "")) for m in prompt_messages if isinstance(m, dict)
+            ).strip()
+
+            if not fallback_text:
+                skipped_prompt += 1
+                continue
+
+            # 计算 prompt token 长度（优先按 chat_template）
+            prompt_len = _prompt_token_len(tokenizer, prompt_messages, fallback_text)
+            if prompt_len > args.max_prompt_length:
                 skipped_prompt += 1
                 continue
 
             # 过滤 label 非整数的数据
-            if not is_int(label_text):
+            if label_text is None or not is_int(label_text):
                 skipped_prompt += 1
                 continue
 
@@ -210,7 +250,7 @@ def main():
                     skipped_long_response += 1
                     continue
 
-            record = build_record({"prompt": prompt_text, "label": label_text})
+            record = build_record(prompt_messages, label_text)
             total_kept += 1
 
             # ------- train / valid 划分逻辑 -------
@@ -261,6 +301,8 @@ def main():
     print(f"  Kept after length filter:    {total_kept}")
     print(f"    -> Train:                  {total_train}")
     print(f"    -> Valid:                  {total_valid}")
+    print(f"  Skipped prompt:              {skipped_prompt}")
+    print(f"  Skipped long response:       {skipped_long_response}")
 
 
 if __name__ == "__main__":

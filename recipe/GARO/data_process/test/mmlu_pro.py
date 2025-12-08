@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import json
 import argparse
@@ -45,6 +48,18 @@ def to_letter(ans):
     return s
 
 
+def make_schema():
+    prompt_struct = pa.struct([
+        ("role", pa.string()),
+        ("content", pa.string()),
+    ])
+    return pa.schema([
+        ("prompt", pa.list_(prompt_struct)),
+        ("reward_model", pa.struct([("ground_truth", pa.string())])),
+        ("data_source", pa.string()),
+    ])
+
+
 def main():
     args = parse_args()
     save_dir = args.save_dir
@@ -60,16 +75,19 @@ def main():
 
     records = []
     for ex in ds:
-        q = ex.get("question", "").strip()
+        q = str(ex.get("question", "")).strip()
         ans = ex.get("answer", "")
         gt = to_letter(ans)
 
-        prompt = q + INSTRUCTION
+        prompt_text = q + INSTRUCTION
+        prompt_messages = [
+            {"role": "user", "content": prompt_text}
+        ]
 
         records.append(
             {
-                "prompt": prompt,
-                "reward_model": {"ground_truth":gt},
+                "prompt": prompt_messages,
+                "reward_model": {"ground_truth": gt},
                 "data_source": "mmlu_pro",
             }
         )
@@ -81,8 +99,9 @@ def main():
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    # 写 Parquet
-    table = pa.Table.from_pylist(records)
+    # 写 Parquet（显式 schema，保证 prompt 类型是 list<struct<role, content>>）
+    schema = make_schema()
+    table = pa.Table.from_pylist(records, schema=schema)
     pq.write_table(table, output_parquet)
 
     print(f"Saved to:\n  {output_jsonl}\n  {output_parquet}")

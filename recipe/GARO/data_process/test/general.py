@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Dict, List, Union, Optional, Tuple
+from typing import Dict, List, Union, Optional, Tuple, Any
 import argparse
 
 import pyarrow as pa
@@ -46,6 +46,45 @@ def load_hf_dataset(
 DatasetConfig = Tuple[str, str, Optional[str], Optional[str], str, str]
 
 
+def _is_chat_messages(x: Any) -> bool:
+    """
+    判断 x 是否已经是 HF chat template 风格：
+    [
+      {"role": "...", "content": "..."},
+      ...
+    ]
+    """
+    if not isinstance(x, list) or len(x) == 0:
+        return False
+    for m in x:
+        if not isinstance(m, dict):
+            return False
+        if "role" not in m or "content" not in m:
+            return False
+    return True
+
+
+def _to_prompt_str(val: Any) -> str:
+    if isinstance(val, (dict, list)):
+        return json.dumps(val, ensure_ascii=False)
+    return str(val)
+
+
+def _normalize_prompt_to_messages(val: Any) -> List[Dict[str, str]]:
+    """
+    统一把 prompt 规范成 chat messages。
+    - 若原本就是 messages，直接返回
+    - 否则转成字符串后用 user 包一层
+    """
+    if _is_chat_messages(val):
+        # 保留原结构
+        # 严格转成 role/content 字符串
+        return [{"role": str(m["role"]), "content": str(m["content"])} for m in val]
+
+    prompt_str = _to_prompt_str(val).strip()
+    return [{"role": "user", "content": prompt_str}]
+
+
 def process_datasets(configs: List[DatasetConfig]):
     """
     每个 config:
@@ -66,10 +105,7 @@ def process_datasets(configs: List[DatasetConfig]):
             if hf_name == "Idavidrein/gpqa":
                 # 问题
                 q_val = ex.get(prompt_key, "")
-                if isinstance(q_val, (dict, list)):
-                    question = json.dumps(q_val, ensure_ascii=False)
-                else:
-                    question = str(q_val)
+                question = _to_prompt_str(q_val)
 
                 # 选项：来自原始字段
                 opt_A = str(ex.get("Correct Answer", ""))
@@ -80,32 +116,28 @@ def process_datasets(configs: List[DatasetConfig]):
                 # 拼接新的 prompt
                 prompt_str = (
                     question
-                    + ' Please choose one of the following options as the answer: '
-                    + f'(A) {opt_A}, (B) {opt_B}, (C) {opt_C}, (D) {opt_D}. '
-                    + 'Reason step by step and output your final answer as only one letter '
-                      '(A, B, C, or D) inside \\boxed{}.'
+                    + " Please choose one of the following options as the answer: "
+                    + f"(A) {opt_A}, (B) {opt_B}, (C) {opt_C}, (D) {opt_D}. "
+                    + "Reason step by step and output your final answer as only one letter "
+                      "(A, B, C, or D) inside \\boxed{}."
                 )
+
+                prompt_messages = [{"role": "user", "content": prompt_str}]
 
                 # groundtruth 改成选项字母（正确答案放在 A）
                 gt_str = "A"
 
             else:
-                # ====== 其它数据集：保持原逻辑 ======
+                # ====== 其它数据集：保持原逻辑，但 prompt 输出为 chat messages ======
                 p_val = ex.get(prompt_key, "")
-                if isinstance(p_val, (dict, list)):
-                    prompt_str = json.dumps(p_val, ensure_ascii=False)
-                else:
-                    prompt_str = str(p_val)
+                prompt_messages = _normalize_prompt_to_messages(p_val)
 
                 g_val = ex.get(groundtruth_key, "")
-                if isinstance(g_val, (dict, list)):
-                    gt_str = json.dumps(g_val, ensure_ascii=False)
-                else:
-                    gt_str = str(g_val)
+                gt_str = _to_prompt_str(g_val)
 
             records.append(
                 {
-                    "prompt": prompt_str,
+                    "prompt": prompt_messages,
                     "reward_model": {"ground_truth": gt_str},
                     "data_source": data_name,
                 }
@@ -119,7 +151,7 @@ def process_datasets(configs: List[DatasetConfig]):
             for r in records:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-        # 写 Parquet
+        # 写 Parquet（自动推断 schema；prompt 会变成 list<struct<role, content>>）
         table = pa.Table.from_pylist(records)
         pq.write_table(table, parquet_path)
 
