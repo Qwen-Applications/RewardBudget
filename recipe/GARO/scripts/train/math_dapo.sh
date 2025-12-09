@@ -26,7 +26,7 @@ if [ "${RANK}" -ne 0 ]; then
 else
     # Primary node runs training
     export RAY_API_SERVER_ADDRESS="http://localhost:8265"
-    echo "提交GRPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
+    echo "提交DAPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
     ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
@@ -36,7 +36,7 @@ else
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
-        data.gen_batch_size=384 \
+        data.gen_batch_size=96 \
         actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \

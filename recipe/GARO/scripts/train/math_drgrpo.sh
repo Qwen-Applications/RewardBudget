@@ -26,7 +26,7 @@ if [ "${RANK}" -ne 0 ]; then
 else
     # Primary node runs training
     export RAY_API_SERVER_ADDRESS="http://localhost:8265"
-    echo "提交GRPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
+    echo "提交Dr.GRPO训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
     ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \

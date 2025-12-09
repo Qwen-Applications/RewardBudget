@@ -36,7 +36,7 @@ else
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
-        data.gen_batch_size=384 \
+        data.gen_batch_size=96 \
         data.prompt_key=prompt \
         data.truncation='left' \
         data.filter_overlong_prompts=False \
@@ -92,7 +92,7 @@ else
         custom_reward_function.path=recipe/GARO/reward.py \
         custom_reward_function.name=compute_score \
         reward_model.reward_manager=dapo \
-        reward_model.overlong_buffer.enable=True \
+        reward_model.overlong_buffer.enable=False \
         reward_model.overlong_buffer.len=2048 \
         reward_model.overlong_buffer.penalty_factor=1.0 \
         trainer.logger='["console","wandb"]' \

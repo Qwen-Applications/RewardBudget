@@ -26,7 +26,7 @@ if [ "${RANK}" -ne 0 ]; then
 else
     # Primary node runs training
     export RAY_API_SERVER_ADDRESS="http://localhost:8265"
-    echo "提交reward_budget_mean_no_kl训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
+    echo "提交reward_budget_mean_0.001_kl_sync100训练脚本 at RANK ${RANK} (${RAY_API_SERVER_ADDRESS})"
     ray job submit --address="${RAY_API_SERVER_ADDRESS}" \
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
