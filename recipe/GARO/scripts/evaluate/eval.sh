@@ -76,6 +76,9 @@ PY
 # end new-changes
 # =========================
 
+export VLLM_USE_NCCL_SYMM_MEM=0
+export HYDRA_FULL_ERROR=1
+
 # Generate responses
 python -m verl.trainer.main_generation \
   trainer.nnodes=${NNODES} \
