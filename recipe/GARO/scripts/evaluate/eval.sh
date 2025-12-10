@@ -90,7 +90,8 @@ python -m verl.trainer.main_generation \
   rollout.top_p=1.0 \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
-  rollout.tensor_model_parallel_size=${NNODES}*${NUM_ACCELERATORS}
+  +rollout.pipeline_model_parallel_size=1 \
+  rollout.tensor_model_parallel_size=${NUM_ACCELERATORS}
 
 # Evaluate results
 python3 recipe/GARO/evaluation.py \
