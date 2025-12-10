@@ -1,8 +1,8 @@
 # Evaluate ${PRIMUS_SAVE_CHECKPOINT_DIR} using unified eval.sh script
 
 DATA_DIR="/primus_datasets/zmy"
-STEP=525
-JOB_ID="primus4f2f04826b2672000567e79c7z"
+STEP=300
+JOB_ID="primusad7f74c10a9b94a3b69982f24z"
 
 # List of tasks to evaluate
 TASKS=(
