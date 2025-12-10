@@ -7,6 +7,7 @@ export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 DATA_DIR="/primus_datasets/zmy"
+TRAIN_DATA="dapo_math_17k"  # "OpenMathReasoning"
 
 if [ "${RANK}" -ne 0 ]; then
     # Other nodes wait for training to complete
@@ -31,8 +32,8 @@ else
         --runtime-env=verl/trainer/runtime_env.yaml \
         -- \
         python -m recipe.entropy.main_entropy \
-        data.train_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_train.parquet" \
-        data.val_files="${DATA_DIR}/GARO/train_data/OpenMathReasoning_valid.parquet" \
+        data.train_files="${DATA_DIR}/GARO/train_data/${TRAIN_DATA}_train.parquet" \
+        data.val_files="${DATA_DIR}/GARO/train_data/${TRAIN_DATA}_valid.parquet" \
         data.max_prompt_length=1024 \
         data.max_response_length=8192 \
         data.train_batch_size=32 \
@@ -97,7 +98,7 @@ else
         reward_model.overlong_buffer.penalty_factor=1.0 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=GARO \
-        trainer.experiment_name=OpenMathReasoning_KLCov \
+        trainer.experiment_name=${TRAIN_DATA}_KLCov \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=25 \
