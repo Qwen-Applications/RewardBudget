@@ -32,7 +32,8 @@ from omegaconf import OmegaConf
 
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
+from verl.single_controller.ray import (RayClassWithInitArgs, RayResourcePool,
+                                        RayWorkerGroup)
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
@@ -76,7 +77,7 @@ def main_task(config):
     dataset = pd.read_parquet(config.data.path)
     chat_lst = dataset[config.data.prompt_key].tolist()
 
-    chat_lst = [chat.tolist() for chat in chat_lst]
+    # chat_lst = [chat.tolist() for chat in chat_lst]
 
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
