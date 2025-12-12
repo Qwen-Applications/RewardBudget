@@ -76,6 +76,7 @@ PY
 # end new-changes
 # =========================
 
+export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export VLLM_USE_NCCL_SYMM_MEM=0
 export HYDRA_FULL_ERROR=1
 
