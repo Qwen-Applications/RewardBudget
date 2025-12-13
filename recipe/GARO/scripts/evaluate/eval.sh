@@ -76,6 +76,11 @@ PY
 # end new-changes
 # =========================
 
+export NNODES=1
+export NUM_ACCELERATORS=8
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export VLLM_USE_NCCL_SYMM_MEM=0
 export HYDRA_FULL_ERROR=1
@@ -95,7 +100,8 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
   +rollout.pipeline_model_parallel_size=1 \
-  rollout.tensor_model_parallel_size=${NUM_ACCELERATORS}
+  rollout.tensor_model_parallel_size=${NUM_ACCELERATORS} \
+  actor_rollout_ref.rollout.mode=async
 
 # Evaluate results
 python3 recipe/GARO/evaluation.py \
