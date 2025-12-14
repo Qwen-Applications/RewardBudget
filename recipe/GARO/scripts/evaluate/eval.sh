@@ -101,7 +101,7 @@ python -m verl.trainer.main_generation \
   rollout.response_length=8192 \
   +rollout.pipeline_model_parallel_size=1 \
   rollout.tensor_model_parallel_size=${NUM_ACCELERATORS} \
-  actor_rollout_ref.rollout.mode=async
+  +actor_rollout_ref.rollout.mode=async
 
 # Evaluate results
 python3 recipe/GARO/evaluation.py \
