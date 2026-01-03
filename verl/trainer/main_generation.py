@@ -76,7 +76,7 @@ def main_task(config):
     dataset = pd.read_parquet(config.data.path)
     chat_lst = dataset[config.data.prompt_key].tolist()
 
-    # chat_lst = [chat.tolist() for chat in chat_lst]
+    chat_lst = [chat.tolist() for chat in chat_lst]
 
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
@@ -140,16 +140,16 @@ def main_task(config):
     output_lst = np.array(output_lst, dtype=object)
     output_lst = np.transpose(output_lst, axes=(1, 0)).tolist()
 
-    # Print dataset dataframe overview
-    print("Dataset length:", len(dataset))
-    print(dataset.describe())
-    print("Dataset examples:")
-    print(dataset.head())
+    # # Print dataset dataframe overview
+    # print("Dataset length:", len(dataset))
+    # print(dataset.describe())
+    # print("Dataset examples:")
+    # print(dataset.head())
 
-    # Print output_lst overview
-    print(f"Output length: {len(output_lst)}")
-    print("Output example:")
-    print(output_lst[0])
+    # # Print output_lst overview
+    # print(f"Output length: {len(output_lst)}")
+    # print("Output example:")
+    # print(output_lst[0])
     
     # add to the data frame
     dataset["responses"] = output_lst
