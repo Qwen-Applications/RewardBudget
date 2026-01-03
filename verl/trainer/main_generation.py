@@ -32,8 +32,7 @@ from omegaconf import OmegaConf
 
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.single_controller.ray import (RayClassWithInitArgs, RayResourcePool,
-                                        RayWorkerGroup)
+from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
@@ -141,6 +140,17 @@ def main_task(config):
     output_lst = np.array(output_lst, dtype=object)
     output_lst = np.transpose(output_lst, axes=(1, 0)).tolist()
 
+    # Print dataset dataframe overview
+    print("Dataset length:", len(dataset))
+    print(dataset.describe())
+    print("Dataset examples:")
+    print(dataset.head())
+
+    # Print output_lst overview
+    print(f"Output length: {len(output_lst)}")
+    print("Output example:")
+    print(output_lst[0])
+    
     # add to the data frame
     dataset["responses"] = output_lst
 
