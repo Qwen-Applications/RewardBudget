@@ -76,10 +76,10 @@ PY
 # end new-changes
 # =========================
 
-export NNODES=1
-export NUM_ACCELERATORS=1
-export CUDA_VISIBLE_DEVICES=0
-export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+# export NNODES=1
+# export NUM_ACCELERATORS=1
+# export CUDA_VISIBLE_DEVICES=0
+# export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export VLLM_USE_NCCL_SYMM_MEM=0
@@ -104,7 +104,7 @@ python -m verl.trainer.main_generation \
   +actor_rollout_ref.rollout.mode=async
 
 # Evaluate results
-python3 recipe/GARO/evaluation.py \
+python3 recipe/GARO/scripts/evaluate/evaluation.py \
   --file ${OUTPUT_PATH} --k 1 \
   --output ${EVAL_PATH}
 
