@@ -140,19 +140,22 @@ def main_task(config):
     output_lst = np.array(output_lst, dtype=object)
     output_lst = np.transpose(output_lst, axes=(1, 0)).tolist()
 
-    # # Print dataset dataframe overview
-    # print("Dataset length:", len(dataset))
-    # print(dataset.describe())
-    # print("Dataset examples:")
-    # print(dataset.head())
-
     # # Print output_lst overview
     # print(f"Output length: {len(output_lst)}")
     # print("Output example:")
     # print(output_lst[0])
-    
+
     # add to the data frame
     dataset["responses"] = output_lst
+
+    # Print dataset dataframe overview
+    print(">>> Dataset length:", len(dataset))
+    print(">>> Dataset info:")
+    print(dataset.info())
+    print(">>> Dataset describe:")
+    print(dataset.describe())
+    print(">>> Dataset examples:")
+    print(dataset.head())
 
     # write to a new parquet
     output_dir = os.path.dirname(config.data.output_path)
