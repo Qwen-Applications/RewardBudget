@@ -36,7 +36,7 @@ fi
 DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
 TMP_PATH="${TMP_DIR}/${TASK}_${MODEL}_${STEP}.parquet"
 OUTPUT_PATH="${OUTPUT_DIR}/GARO/"
-EVAL_PATH=${OUTPUT_DIR}/GARO/eval_${MODEL}_${STEP}.json
+EVAL_PATH=${OUTPUT_DIR}/GARO/${TASK}_${MODEL}_${STEP}.eval.json
 
 # Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
 CHECKPOINT_DIR="/primus_oss_root/repository/quark_sft/${JOB_ID}/save_checkpoint"
