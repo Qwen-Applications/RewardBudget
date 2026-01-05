@@ -32,7 +32,8 @@ from omegaconf import OmegaConf
 
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
+from verl.single_controller.ray import (RayClassWithInitArgs, RayResourcePool,
+                                        RayWorkerGroup)
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.hdfs_io import makedirs
@@ -148,14 +149,14 @@ def main_task(config):
     # add to the data frame
     dataset["responses"] = output_lst
 
-    # Print dataset dataframe overview
-    print(">>> Dataset length:", len(dataset))
-    print(">>> Dataset info:")
-    print(dataset.info())
-    print(">>> Dataset describe:")
-    print(dataset.describe())
-    print(">>> Dataset examples:")
-    print(dataset.head())
+    # # Print dataset dataframe overview
+    # print(">>> Dataset length:", len(dataset))
+    # print(">>> Dataset info:")
+    # print(dataset.info())
+    # print(">>> Dataset describe:")
+    # print(dataset.describe())
+    # print(">>> Dataset examples:")
+    # print(dataset.head())
 
     # write to a new parquet
     output_dir = os.path.dirname(config.data.output_path)

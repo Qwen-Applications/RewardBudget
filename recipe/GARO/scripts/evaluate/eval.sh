@@ -18,6 +18,7 @@ STEP=$3
 JOB_ID=$4
 DATA_DIR=${5:-"/primus_datasets/zmy"}
 OUTPUT_DIR=${6:-${PRIMUS_OUTPUT_DIR}}
+TMP_DIR="/root/tmp"
 
 # Validate inputs
 if [ -z "$OUTPUT_DIR" ]; then
@@ -33,6 +34,7 @@ fi
 
 # Define data paths based on task
 DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
+TMP_PATH="${TMP_DIR}/${TASK}_${MODEL}_${STEP}.parquet"
 OUTPUT_PATH="${OUTPUT_DIR}/GARO/${TASK}_${MODEL}_${STEP}.parquet"
 EVAL_PATH=${OUTPUT_DIR}/GARO/eval_${MODEL}_${STEP}.json
 
@@ -42,11 +44,12 @@ CHECKPOINT_PATH="${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
 
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_DIR}/GARO"
+mkdir -p "${TMP_DIR}"
 
 echo "[INFO] Running evaluation for task: $TASK, model: $MODEL, step: $STEP, job: $JOB_ID"
 echo "[INFO] Data path: $DATA_PATH"
 echo "[INFO] Checkpoint path: ${CHECKPOINT_PATH}"
-echo "[INFO] Output path: ${OUTPUT_PATH}"
+echo "[INFO] Output path: ${OUTPUT_PATH} (and temp path: ${TMP_PATH})"
 echo "[INFO] Evaluation path: ${EVAL_PATH}"
 
 # =========================
@@ -92,7 +95,7 @@ python -m verl.trainer.main_generation \
   data.path=${DATA_PATH} \
   data.prompt_key=prompt \
   data.n_samples=1 \
-  data.output_path=${OUTPUT_PATH} \
+  data.output_path=${TMP_PATH} \
   model.path=${CHECKPOINT_PATH} \
   +model.trust_remote_code=True \
   rollout.temperature=0.0 \
@@ -103,9 +106,12 @@ python -m verl.trainer.main_generation \
   rollout.tensor_model_parallel_size=${NUM_ACCELERATORS} \
   +actor_rollout_ref.rollout.mode=async
 
+# Copy results to output directory using rclone
+rclone copy ${TMP_PATH} ${OUTPUT_PATH} --progress --transfers=80
+
 # Evaluate results
 python3 recipe/GARO/scripts/evaluate/evaluation.py \
-  --file ${OUTPUT_PATH} --k 1 \
+  --file ${TMP_PATH} --k 1 \
   --output ${EVAL_PATH}
 
 echo "[INFO] Evaluation completed. Results saved to ${EVAL_PATH}"
