@@ -35,7 +35,7 @@ fi
 # Define data paths based on task
 DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
 TMP_PATH="${TMP_DIR}/${TASK}_${MODEL}_${STEP}.parquet"
-OUTPUT_PATH="${OUTPUT_DIR}/GARO/${TASK}_${MODEL}_${STEP}.parquet"
+OUTPUT_PATH="${OUTPUT_DIR}/GARO/"
 EVAL_PATH=${OUTPUT_DIR}/GARO/eval_${MODEL}_${STEP}.json
 
 # Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
