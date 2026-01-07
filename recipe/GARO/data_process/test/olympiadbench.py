@@ -19,15 +19,15 @@ PROMPT_PREFIX = (
 #   OlympiadBench_{math|physics}_{en|zh}_{comp|cee}
 # and each task merges OE + TP subsets.
 TASK_TO_CONFIGS = {
+    # 数学
     "OlympiadBench_math_en_comp": ["OE_TO_maths_en_COMP", "TP_TO_maths_en_COMP"],
-    "OlympiadBench_math_en_cee": ["OE_TO_maths_en_CEE", "TP_TO_maths_en_CEE"],
     "OlympiadBench_math_zh_comp": ["OE_TO_maths_zh_COMP", "TP_TO_maths_zh_COMP"],
     "OlympiadBench_math_zh_cee": ["OE_TO_maths_zh_CEE", "TP_TO_maths_zh_CEE"],
+    # 物理
     "OlympiadBench_physics_en_comp": ["OE_TO_physics_en_COMP", "TP_TO_physics_en_COMP"],
-    "OlympiadBench_physics_en_cee": ["OE_TO_physics_en_CEE", "TP_TO_physics_en_CEE"],
-    "OlympiadBench_physics_zh_comp": ["OE_TO_physics_zh_COMP", "TP_TO_physics_zh_COMP"],
-    "OlympiadBench_physics_zh_cee": ["OE_TO_physics_zh_CEE", "TP_TO_physics_zh_CEE"],
+    "OlympiadBench_physics_zh_cee": ["OE_TO_physics_zh_CEE"],  # 数据集中只有这个子集
 }
+
 
 
 def parse_args():
