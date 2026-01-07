@@ -9,18 +9,25 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from datasets import load_dataset
 
-# 只处理 text-only 的 subset（名字里带 TO）
-TEXT_ONLY_CONFIGS = [
-    "OE_TO_maths_en_COMP",
-    "OE_TO_maths_zh_CEE",
-    "OE_TO_maths_zh_COMP",
-    "OE_TO_physics_en_COMP",
-    "OE_TO_physics_zh_CEE",
-    "TP_TO_maths_en_COMP",
-    "TP_TO_maths_zh_CEE",
-    "TP_TO_maths_zh_COMP",
-    "TP_TO_physics_en_COMP",
-]
+
+PROMPT_PREFIX = (
+    r"Solve the following problem. Make sure to put the answer (and only answer) inside \\boxed{}. "
+)
+
+
+# The evaluation scripts expect these 8 parquet/jsonl files under test_data/:
+#   OlympiadBench_{math|physics}_{en|zh}_{comp|cee}
+# and each task merges OE + TP subsets.
+TASK_TO_CONFIGS = {
+    "OlympiadBench_math_en_comp": ["OE_TO_maths_en_COMP", "TP_TO_maths_en_COMP"],
+    "OlympiadBench_math_en_cee": ["OE_TO_maths_en_CEE", "TP_TO_maths_en_CEE"],
+    "OlympiadBench_math_zh_comp": ["OE_TO_maths_zh_COMP", "TP_TO_maths_zh_COMP"],
+    "OlympiadBench_math_zh_cee": ["OE_TO_maths_zh_CEE", "TP_TO_maths_zh_CEE"],
+    "OlympiadBench_physics_en_comp": ["OE_TO_physics_en_COMP", "TP_TO_physics_en_COMP"],
+    "OlympiadBench_physics_en_cee": ["OE_TO_physics_en_CEE", "TP_TO_physics_en_CEE"],
+    "OlympiadBench_physics_zh_comp": ["OE_TO_physics_zh_COMP", "TP_TO_physics_zh_COMP"],
+    "OlympiadBench_physics_zh_cee": ["OE_TO_physics_zh_CEE", "TP_TO_physics_zh_CEE"],
+}
 
 
 def parse_args():
@@ -32,10 +39,10 @@ def parse_args():
         help="保存 OlympiadBench 处理结果的目录（必填）",
     )
     parser.add_argument(
-        "--data_name",
+        "--split",
         type=str,
-        default="OlympiadBench_textonly_all",
-        help="输出文件名不含后缀（默认合并后的大集合名）",
+        default="train",
+        help="HuggingFace split（默认 train）",
     )
     return parser.parse_args()
 
@@ -56,61 +63,57 @@ def make_schema():
     ])
     return pa.schema([
         ("prompt", pa.list_(prompt_struct)),
-        ("response", pa.string()),
         ("reward_model", pa.struct([("ground_truth", pa.string())])),
         ("data_source", pa.string()),
     ])
 
 
-def main():
-    args = parse_args()
-    save_dir = args.save_dir
-    data_name = args.data_name
-
+def _write_records(save_dir: str, task_name: str, records: list):
     os.makedirs(save_dir, exist_ok=True)
+    jsonl_path = os.path.join(save_dir, f"{task_name}.jsonl")
+    parquet_path = os.path.join(save_dir, f"{task_name}.parquet")
 
-    output_jsonl = os.path.join(save_dir, f"{data_name}.jsonl")
-    output_parquet = os.path.join(save_dir, f"{data_name}.parquet")
-
-    records = []
-
-    for cfg in TEXT_ONLY_CONFIGS:
-        print(f"Loading subset: {cfg}")
-        ds = load_dataset("Hothan/OlympiadBench", cfg, split="train")
-
-        for ex in ds:
-            question = _to_str(ex.get("question", "")).strip()
-            solution = ex.get("solution", "")
-            final_answer = ex.get("final_answer", "")
-
-            if not question:
-                continue
-
-            prompt_messages = [
-                {"role": "user", "content": question}
-            ]
-
-            record = {
-                "prompt": prompt_messages,
-                "response": _to_str(solution),
-                "reward_model": {"ground_truth": _to_str(final_answer)},
-                "data_source": "olympiadbench",
-            }
-            records.append(record)
-
-    print(f"Total merged text-only samples: {len(records)}")
-
-    # 写 JSONL
-    with open(output_jsonl, "w", encoding="utf-8") as f:
+    with open(jsonl_path, "w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    # 写 Parquet（显式 schema）
     schema = make_schema()
     table = pa.Table.from_pylist(records, schema=schema)
-    pq.write_table(table, output_parquet)
+    pq.write_table(table, parquet_path)
 
-    print(f"Saved to:\n  {output_jsonl}\n  {output_parquet}")
+    print(f"Saved {len(records)} rows -> {jsonl_path} / {parquet_path}")
+
+
+def main():
+    args = parse_args()
+    save_dir = args.save_dir
+    split = args.split
+
+    for task_name, cfgs in TASK_TO_CONFIGS.items():
+        records = []
+        for cfg in cfgs:
+            print(f"Loading subset: {cfg} (split='{split}')")
+            ds = load_dataset("Hothan/OlympiadBench", cfg, split=split)
+
+            for ex in ds:
+                question = _to_str(ex.get("question", "")).strip()
+                final_answer = _to_str(ex.get("final_answer", "")).strip()
+                if not question:
+                    continue
+
+                prompt_messages = [
+                    {"role": "user", "content": (PROMPT_PREFIX + question).strip()}
+                ]
+                records.append(
+                    {
+                        "prompt": prompt_messages,
+                        "reward_model": {"ground_truth": final_answer},
+                        "data_source": task_name,
+                    }
+                )
+
+        _write_records(save_dir, task_name, records)
+
     print("Done.")
 
 

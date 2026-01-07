@@ -10,11 +10,56 @@ import pyarrow.parquet as pq
 from datasets import load_dataset
 
 
-# 这里用字符串而不是 tuple，避免 q + INSTRUCTION 报错
-INSTRUCTION = (
-    # " Based on the question and the given choices, reason step by step, then select the single correct answer from A/B/C/D and output only one of \\boxed{A}, \\boxed{B}, \\boxed{C}, \\boxed{D}, with no additional text."
-    ""
+INSTRUCTION_SUFFIX = (
+    "\n\nPlease choose the single best answer. "
+    "Reason step by step and output your final answer as only one letter "
+    "(A, B, C, D, E, F, G, H, I, or J) inside \\boxed{}."
 )
+
+
+def _to_str(x):
+    if x is None:
+        return ""
+    if isinstance(x, (list, dict)):
+        return json.dumps(x, ensure_ascii=False)
+    return str(x)
+
+
+def _extract_question_and_options(ex: dict):
+    """Best-effort extraction across different MMLU-Pro dataset schemas."""
+    q = _to_str(ex.get("question") or ex.get("prompt") or ex.get("input") or "").strip()
+
+    # Options can be: list[str] (preferred), dict, or nested under various keys.
+    opts = ex.get("options")
+    if opts is None:
+        opts = ex.get("choices")
+    if opts is None:
+        opts = ex.get("answer_choices")
+
+    options = []
+    if isinstance(opts, list):
+        options = [_to_str(o).strip() for o in opts]
+    elif isinstance(opts, dict):
+        # dict like {"A": "...", ...} or {"choices": [...]} etc.
+        if all(k in opts for k in list("ABCDEFGHIJ")):
+            options = [_to_str(opts[k]).strip() for k in list("ABCDEFGHIJ")]
+        elif "choices" in opts and isinstance(opts["choices"], list):
+            options = [_to_str(o).strip() for o in opts["choices"]]
+
+    # Trim to at most 10 options for safety.
+    options = [o for o in options if o]
+    if len(options) > 10:
+        options = options[:10]
+
+    return q, options
+
+
+def _format_options(options):
+    letters = list("ABCDEFGHIJ")
+    lines = []
+    for i, opt in enumerate(options[:10]):
+        lines.append(f"({letters[i]}) {opt}")
+    return "\n".join(lines)
 
 
 def parse_args():
@@ -30,21 +75,23 @@ def parse_args():
 
 def to_letter(ans):
     """
-    mmlu 的 answer 可能是：
-    - int: 0/1/2/3
-    - str: 'A'/'B'/'C'/'D' 或 '0'/'1'/'2'/'3'
-    统一转成 'A'~'D'
+    mmlu-pro 的 answer 可能是：
+    - int: 0..9
+    - str: 'A'..'J' 或 '0'..'9'
+    统一转成 'A'~'J'
     """
     if isinstance(ans, int):
-        mapping = ["A", "B", "C", "D"]
-        return mapping[ans] if 0 <= ans < 4 else str(ans)
+        mapping = list("ABCDEFGHIJ")
+        return mapping[ans] if 0 <= ans < 10 else str(ans)
 
     s = str(ans).strip()
-    if s in ["A", "B", "C", "D"]:
+    if s in list("ABCDEFGHIJ"):
         return s
-    if s in ["0", "1", "2", "3"]:
-        mapping = ["A", "B", "C", "D"]
-        return mapping[int(s)]
+    if s.isdigit():
+        idx = int(s)
+        mapping = list("ABCDEFGHIJ")
+        if 0 <= idx < 10:
+            return mapping[idx]
     return s
 
 
@@ -69,17 +116,28 @@ def main():
     output_jsonl = os.path.join(save_dir, "mmlu_pro.jsonl")
     output_parquet = os.path.join(save_dir, "mmlu_pro.parquet")
 
-    # 通常用于评测的是 config="all", split="test"
-    print("Loading cais/mmlu (config='all', split='test')...")
-    ds = load_dataset("cais/mmlu", "all", split="test")
+    # MMLU-Pro (10 options)
+    # Prefer TIGER-Lab/MMLU-Pro; keep a fallback for environments without it.
+    try:
+        print("Loading TIGER-Lab/MMLU-Pro (split='test')...")
+        ds = load_dataset("TIGER-Lab/MMLU-Pro", split="test")
+    except Exception as e:
+        print(f"[WARN] Failed to load TIGER-Lab/MMLU-Pro: {e}")
+        print("Falling back to cais/mmlu (config='all', split='test')... (NOTE: this is NOT MMLU-Pro)")
+        ds = load_dataset("cais/mmlu", "all", split="test")
 
     records = []
     for ex in ds:
-        q = str(ex.get("question", "")).strip()
-        ans = ex.get("answer", "")
+        q, options = _extract_question_and_options(ex)
+        ans = ex.get("answer", ex.get("label", ""))
         gt = to_letter(ans)
 
-        prompt_text = q + INSTRUCTION
+        opt_block = _format_options(options)
+        prompt_text = (
+            q
+            + ("\n\nOptions:\n" + opt_block if opt_block else "")
+            + INSTRUCTION_SUFFIX
+        )
         prompt_messages = [
             {"role": "user", "content": prompt_text}
         ]

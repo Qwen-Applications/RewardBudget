@@ -10,6 +10,11 @@ import pyarrow.parquet as pq
 from datasets import load_dataset
 
 
+PROMPT_PREFIX = (
+    r"Solve the following problem. Make sure to put the answer (and only answer) inside \\boxed{}. "
+)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -67,7 +72,7 @@ def main():
         answer_type = str(ex.get("answer_type", ""))
 
         prompt_messages = [
-            {"role": "user", "content": question}
+            {"role": "user", "content": (PROMPT_PREFIX + question).strip()}
         ]
 
         records.append(
