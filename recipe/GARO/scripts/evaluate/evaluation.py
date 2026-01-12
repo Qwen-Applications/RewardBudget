@@ -16,6 +16,7 @@ from recipe.GARO.reward import compute_score
 # =====================
 # 1) data_source routing
 # =====================
+# 在 LOCAL_SOURCES 里面的，走 exact-match；其他的走 API
 LOCAL_SOURCES = {
     "gpqa_diamond",
     "gpqa_main",
@@ -155,30 +156,16 @@ class JudgeConfig:
 
 
 def build_judge_prompt(question: str, ground_truth: str, pred_answer: str) -> str:
-    return f"""You are a strict evaluator.
+    return f"""Judge if the model final answer matches the ground truth for the given problem.
 
-You will be given:
-1) The problem.
-2) The ground-truth answer.
-3) The model's extracted final answer.
+Be strict on meaning, not format: ignore LaTeX/whitespace/notation; accept mathematically equivalent forms.
+Respect required domain/units/exactness; allow small rounding error.
 
-Your job is to decide whether the model's answer is correct.
+Reply ONLY with \\boxed{{correct}} or \\boxed{{incorrect}}.
 
-Rules:
-- Judge correctness based on the problem and the ground-truth answer.
-- Ignore any reasoning. Only evaluate the final answer.
-- If the answer is correct, reply with \\boxed{{correct}}.
-- Otherwise, reply with \\boxed{{incorrect}}.
-- Do NOT output anything else.
-
-Problem:
-{question}
-
-Ground-truth answer:
-{ground_truth}
-
-Model's extracted final answer:
-{pred_answer}
+Problem: {question}
+Ground truth: {ground_truth}
+Model answer: {pred_answer}
 """
 
 
