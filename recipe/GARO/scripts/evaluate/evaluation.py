@@ -292,7 +292,7 @@ def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: Ju
         _JUDGE_VERDICT_CACHE[ck] = score
         return score
     except Exception as e:
-        # 你也可以 print warning
+        print(f"[WARN] judge failed: {type(e).__name__}: {e}.")
         return 0.0
 
 
