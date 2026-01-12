@@ -5,11 +5,11 @@ import argparse
 import json
 import os
 import re
+import hashlib
 from dataclasses import dataclass
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Tuple
 
 import torch
-import pyarrow.parquet as pq
 
 from recipe.GARO.reward import compute_score
 
@@ -63,6 +63,13 @@ def _iter_records(file_path: str):
 
     # --- Parquet ---
     elif ext == ".parquet":
+        try:
+            import pyarrow.parquet as pq  # type: ignore
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "pyarrow is required to read parquet files. Please install pyarrow or convert to JSONL."
+            ) from e
+
         table = pq.read_table(file_path)
         cols = table.to_pydict()
         n = table.num_rows
@@ -75,33 +82,76 @@ def _iter_records(file_path: str):
 
 
 # =====================
-# 3) A lightweight boxed extractor
+# 3) Boxed extractor (brace-matching, consistent with recipe.GARO.reward)
 # =====================
-_BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}")
+_BOXED_RE = re.compile(r"\\boxed\{")
+
 
 def extract_solution_inside_boxed(text: str) -> str:
-    """
-    简易版：抽取最后一个 \boxed{...} 里的内容。
-    如果没有 boxed，就返回空串。
+    """Extract the LAST \boxed{...} content.
+
+    This brace-matching version supports nested braces (robust for LaTeX).
+    Returns "" if no boxed is found.
     """
     if not text:
         return ""
-    matches = _BOXED_RE.findall(text)
-    if not matches:
-        return ""
-    return matches[-1].strip()
+
+    # The model outputs a single backslash in Python strings (i.e. "\\boxed{...")
+    # so we search for r"\boxed{".
+    key = r"\boxed{"  # one backslash in the *text*
+    i, n = 0, len(text)
+    last: Optional[str] = None
+
+    while i < n:
+        start = text.find(key, i)
+        if start == -1:
+            break
+        j = start + len(key)
+        depth = 1
+        content_start = j
+        while j < n and depth > 0:
+            c = text[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+            j += 1
+        if depth == 0:
+            last = text[content_start : j - 1]
+            i = j
+        else:
+            break
+    return (last or "").strip()
 
 
 # =====================
-# 4) API Judge (template)
+# 4) API Judge
 # =====================
+
+
 @dataclass
 class JudgeConfig:
-    api_base: str
-    api_key: str
-    model: str = "gpt-4o-mini"  # 你可以改成你们的 judge 模型
+    """Judge backend configuration.
+
+    Supported backends:
+      - qwen_primus: use recipe/GARO/scripts/evaluate/qwen_primus.py (SSE)
+      - openai_compat: OpenAI-compatible /v1/chat/completions endpoint
+    """
+
+    backend: str = "qwen_primus"
+
+    # --- openai_compat ---
+    api_base: str = ""
+    api_key: str = ""
+    model: str = "gpt-4o-mini"
     timeout: int = 60
     temperature: float = 0.0
+
+    # --- qwen_primus ---
+    qwen_api_key: str = ""
+    qwen_text_model_url: str = ""
+    qwen_model_name: str = "qwen3-235b-instruct-trans-sg"
+    qwen_verbose: bool = False
 
 
 def build_judge_prompt(question: str, ground_truth: str, pred_answer: str) -> str:
@@ -141,16 +191,16 @@ def parse_judge_boxed(output_text: str) -> Optional[bool]:
     """
     if not output_text:
         return None
-    m = _BOXED_RE.search(output_text)
-    if not m:
-        # 容错：万一模型没 boxed
+    # Extract last boxed content if present
+    boxed = extract_solution_inside_boxed(output_text)
+    if not boxed:
         lowered = output_text.strip().lower()
         if lowered == "correct":
             return True
         if lowered == "incorrect":
             return False
         return None
-    tag = m.group(1).strip().lower()
+    tag = boxed.strip().lower()
     if tag == "correct":
         return True
     if tag == "incorrect":
@@ -158,33 +208,78 @@ def parse_judge_boxed(output_text: str) -> Optional[bool]:
     return None
 
 
-def call_judge_api(prompt: str, cfg: JudgeConfig) -> str:
-    """
-    通用 HTTP 模板（你需要按你们的 API 规范改字段）。
-    如果你们用的是 OpenAI-compatible 接口，这个结构通常能对上。
-    """
-    import requests
+_QWEN_HANDLER_CACHE: Dict[Tuple[str, str, str, bool], Any] = {}
 
-    url = cfg.api_base.rstrip("/") + "/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {cfg.api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": cfg.model,
-        "temperature": cfg.temperature,
-        "messages": [
+
+def _get_qwen_handler(cfg: JudgeConfig):
+    from recipe.GARO.scripts.evaluate.qwen_primus import LLMHandler
+
+    # allow empty fields -> fall back to defaults inside LLMHandler
+    api_key = cfg.qwen_api_key or os.getenv("QWEN_API_KEY", "")
+    url = cfg.qwen_text_model_url or os.getenv("QWEN_TEXT_MODEL_URL", "")
+    model_name = cfg.qwen_model_name or os.getenv("QWEN_MODEL_NAME", "qwen3-235b-instruct-trans-sg")
+    verbose = bool(cfg.qwen_verbose)
+
+    cache_key = (api_key, url, model_name, verbose)
+    if cache_key not in _QWEN_HANDLER_CACHE:
+        _QWEN_HANDLER_CACHE[cache_key] = LLMHandler(
+            text_model_name=model_name,
+            api_key=api_key or None,
+            text_model_url=url or None,
+            verbose=verbose,
+            timeout=cfg.timeout,
+        )
+    return _QWEN_HANDLER_CACHE[cache_key]
+
+
+def call_judge_api(prompt: str, cfg: JudgeConfig) -> str:
+    """Call judge model with the configured backend."""
+
+    if cfg.backend == "qwen_primus":
+        handler = _get_qwen_handler(cfg)
+        messages = [
             {"role": "system", "content": "You are a precise grading assistant."},
             {"role": "user", "content": prompt},
-        ],
-    }
+        ]
+        # qwen_primus returns a plain string in non-stream mode
+        return handler.call_qwen3(messages, stream=False, model_name=cfg.qwen_model_name)
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout)
-    resp.raise_for_status()
-    data = resp.json()
+    if cfg.backend == "openai_compat":
+        import requests
 
-    # OpenAI-compatible parsing
-    return data["choices"][0]["message"]["content"]
+        url = cfg.api_base.rstrip("/") + "/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {cfg.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": cfg.model,
+            "temperature": cfg.temperature,
+            "messages": [
+                {"role": "system", "content": "You are a precise grading assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        }
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
+    raise ValueError(f"Unknown judge backend: {cfg.backend}")
+
+
+_JUDGE_VERDICT_CACHE: Dict[str, float] = {}
+
+
+def _cache_key(question: str, ground_truth: str, pred_answer: str) -> str:
+    h = hashlib.sha1()
+    h.update(question.encode("utf-8", errors="ignore"))
+    h.update(b"\0")
+    h.update(ground_truth.encode("utf-8", errors="ignore"))
+    h.update(b"\0")
+    h.update(pred_answer.encode("utf-8", errors="ignore"))
+    return h.hexdigest()
 
 
 def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: JudgeConfig) -> float:
@@ -195,6 +290,10 @@ def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: Ju
     pred_answer = extract_solution_inside_boxed(solution_str)
     prompt = build_judge_prompt(question, ground_truth, pred_answer)
 
+    ck = _cache_key(question, ground_truth, pred_answer)
+    if ck in _JUDGE_VERDICT_CACHE:
+        return _JUDGE_VERDICT_CACHE[ck]
+
     # 重要：如果你真的在 DDP 环境跑评测，避免多 rank 重复扣费
     if torch.distributed.is_initialized() and not is_main_process():
         return 0.0
@@ -202,9 +301,9 @@ def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: Ju
     try:
         out = call_judge_api(prompt, cfg)
         verdict = parse_judge_boxed(out)
-        if verdict is None:
-            return 0.0
-        return 1.0 if verdict else 0.0
+        score = 1.0 if verdict else 0.0
+        _JUDGE_VERDICT_CACHE[ck] = score
+        return score
     except Exception as e:
         # 你也可以 print warning
         return 0.0
@@ -358,23 +457,52 @@ if __name__ == "__main__":
         help="Optional path to save metrics JSON",
     )
 
-    # ===== Judge API args (optional) =====
+    # ===== Judge backend args =====
+    parser.add_argument(
+        "--judge_backend",
+        type=str,
+        default=os.getenv("JUDGE_BACKEND", "qwen_primus"),
+        choices=["qwen_primus", "openai_compat"],
+        help="LLM-as-judge backend. Default: qwen_primus",
+    )
+
+    # ---- openai_compat ----
     parser.add_argument("--judge_api_base", type=str, default=os.getenv("JUDGE_API_BASE", ""))
     parser.add_argument("--judge_api_key", type=str, default=os.getenv("JUDGE_API_KEY", ""))
     parser.add_argument("--judge_model", type=str, default=os.getenv("JUDGE_MODEL", "gpt-4o-mini"))
     parser.add_argument("--judge_timeout", type=int, default=int(os.getenv("JUDGE_TIMEOUT", "60")))
     parser.add_argument("--judge_temperature", type=float, default=float(os.getenv("JUDGE_TEMPERATURE", "0.0")))
 
+    # ---- qwen_primus ----
+    parser.add_argument("--qwen_api_key", type=str, default=os.getenv("QWEN_API_KEY", ""))
+    parser.add_argument("--qwen_text_model_url", type=str, default=os.getenv("QWEN_TEXT_MODEL_URL", ""))
+    parser.add_argument("--qwen_model_name", type=str, default=os.getenv("QWEN_MODEL_NAME", "qwen3-235b-instruct-trans-sg"))
+    parser.add_argument("--qwen_verbose", action="store_true", help="Print qwen request_id / debug logs")
+
     args = parser.parse_args()
 
+    # Build judge config.
+    # - qwen_primus: enabled by default (uses defaults in qwen_primus.py if you don't pass key/url)
+    # - openai_compat: only enabled if api_base/api_key are provided
     judge_cfg = None
-    if args.judge_api_base and args.judge_api_key:
+    if args.judge_backend == "qwen_primus":
         judge_cfg = JudgeConfig(
-            api_base=args.judge_api_base,
-            api_key=args.judge_api_key,
-            model=args.judge_model,
+            backend="qwen_primus",
             timeout=args.judge_timeout,
-            temperature=args.judge_temperature,
+            qwen_api_key=args.qwen_api_key,
+            qwen_text_model_url=args.qwen_text_model_url,
+            qwen_model_name=args.qwen_model_name,
+            qwen_verbose=args.qwen_verbose,
         )
+    else:
+        if args.judge_api_base and args.judge_api_key:
+            judge_cfg = JudgeConfig(
+                backend="openai_compat",
+                api_base=args.judge_api_base,
+                api_key=args.judge_api_key,
+                model=args.judge_model,
+                timeout=args.judge_timeout,
+                temperature=args.judge_temperature,
+            )
 
     eval_pass_at_k(args.file, args.k, args.output, judge_cfg=judge_cfg)
