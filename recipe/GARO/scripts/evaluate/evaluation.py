@@ -461,9 +461,9 @@ if __name__ == "__main__":
     parser.add_argument("--judge_temperature", type=float, default=float(os.getenv("JUDGE_TEMPERATURE", "0.0")))
 
     # ---- qwen_primus ----
-    parser.add_argument("--qwen_api_key", type=str, default=os.getenv("QWEN_API_KEY", ""))
-    parser.add_argument("--qwen_text_model_url", type=str, default=os.getenv("QWEN_TEXT_MODEL_URL", ""))
-    parser.add_argument("--qwen_model_name", type=str, default=os.getenv("QWEN_MODEL_NAME", "qwen3-235b-instruct-trans-sg"))
+    parser.add_argument("--qwen_api_key", type=str, default="REDACTED_QWEN_API_KEY")
+    parser.add_argument("--qwen_text_model_url", type=str, default="http://shenma-ai-pub.alibaba-inc.com/v1/completions")
+    parser.add_argument("--qwen_model_name", type=str, default="qwen3-235b-instruct-trans-sg")
     parser.add_argument("--qwen_verbose", action="store_true", help="Print qwen request_id / debug logs")
 
     args = parser.parse_args()
