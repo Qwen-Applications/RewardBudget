@@ -229,7 +229,7 @@ if __name__ == "__main__":
         #     f.write(message['content'])
 
     response = llm_handler.call_qwen3(messages, stream=False)
-    print(response.choices[0].message.content)
+    print(response)
 
     # # 测试流式输出
     # print("流式输出测试:")
