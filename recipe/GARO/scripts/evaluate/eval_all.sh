@@ -90,15 +90,15 @@ PY
 # =========================
 
 # export NNODES=1
-# export NUM_ACCELERATORS=1
-# export CUDA_VISIBLE_DEVICES=0
+# export NUM_ACCELERATORS=8
+# export CUDA_VISIBLE_DEVICES=$(seq -s , 0 $((NUM_ACCELERATORS-1)))
 # export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
-export CUDA_DEVICE_MAX_CONNECTIONS=1
-export VLLM_ALLREDUCE_USE_SYMM_MEM=0
-export VLLM_USE_NCCL_SYMM_MEM=0
-export HYDRA_FULL_ERROR=1
-export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
+# export CUDA_DEVICE_MAX_CONNECTIONS=1
+# export VLLM_ALLREDUCE_USE_SYMM_MEM=0
+# export VLLM_USE_NCCL_SYMM_MEM=0
+# export HYDRA_FULL_ERROR=1
+# export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
 
 
 # Generate responses (load ckpt ONCE, then run all datasets sequentially)
@@ -126,7 +126,7 @@ python -m verl.trainer.main_generation_multi \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
   +rollout.pipeline_model_parallel_size=1 \
-  rollout.tensor_model_parallel_size=${NUM_ACCELERATORS} \
+  rollout.tensor_model_parallel_size=1 \
   +actor_rollout_ref.rollout.mode=async
 
 # Copy results to output directory using rclone + evaluate each dataset
