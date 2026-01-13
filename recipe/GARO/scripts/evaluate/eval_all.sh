@@ -1,28 +1,28 @@
 #!/bin/bash
 
 # Unified evaluation script for GARO tasks
-# Usage: ./recipe/GARO/scripts/eval.sh <task> <global_step> [data_root] [output_dir]
+# Usage: ./recipe/GARO/scripts/eval.sh <model> <global_step> <job_id>
 
 set -e
 
 # Check arguments
-if [ $# -lt 2 ]; then
-    echo "Usage: $0 <task> <model> <global_step> [data_root] [output_dir]"
-    echo "Example: $0 grpo math500 525"
+if [ $# -ne 3 ]; then
+    echo "Usage: $0 <model> <global_step> <job_id>"
+    echo "Example: $0 grpo 300 primusad7f74c10a9b94a3b69982f24z"
     exit 1
 fi
 
-TASK="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
-MODEL="grpo"
-STEP=300
-JOB_ID="primusad7f74c10a9b94a3b69982f24z"
+TASK_LIST="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
+MODEL="$1"
+STEP="$2"
+JOB_ID="$3"
 DATA_DIR="/primus_datasets/zmy"
-OUTPUT_DIR=${6:-${PRIMUS_OUTPUT_DIR}}
+OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
 TMP_DIR="/root/tmp"
 
 # Validate inputs
 if [ -z "$OUTPUT_DIR" ]; then
-    echo "Error: PRIMUS_OUTPUT_DIR not set and no output directory provided"
+    echo "Error: PRIMUS_OUTPUT_DIR not set"
     exit 1
 fi
 
@@ -31,11 +31,9 @@ if [ -z "$PRIMUS_SAVE_CHECKPOINT_DIR" ]; then
     exit 1
 fi
 
-
 # Support multiple tasks in one run (comma-separated), to avoid re-loading ckpt.
-# Example:
-#   ./eval.sh "math500,gsm8k" qwen 525 <job_id>
-IFS=',' read -r -a TASKS <<< "${TASK}"
+# Split TASK_LIST into an array
+IFS=',' read -ra TASKS <<< "$TASK_LIST"
 
 OUTPUT_PATH="${OUTPUT_DIR}/GARO/"
 
@@ -82,7 +80,6 @@ if not rows:
 else:
     row = rows[0]
     print("[DEBUG] First row keys:", list(row.keys()))
-    print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
     print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
     print("[DEBUG] First row prompt value:", row.get("prompt"))
 PY
