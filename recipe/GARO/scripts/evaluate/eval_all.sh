@@ -12,11 +12,11 @@ if [ $# -lt 2 ]; then
     exit 1
 fi
 
-TASK=$1
-MODEL=$2
-STEP=$3
-JOB_ID=$4
-DATA_DIR=${5:-"/primus_datasets/zmy"}
+TASK="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
+MODEL="grpo"
+STEP=300
+JOB_ID="primusad7f74c10a9b94a3b69982f24z"
+DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${6:-${PRIMUS_OUTPUT_DIR}}
 TMP_DIR="/root/tmp"
 
