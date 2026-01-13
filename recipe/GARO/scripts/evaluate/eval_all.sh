@@ -91,11 +91,11 @@ PY
 # export CUDA_VISIBLE_DEVICES=$(seq -s , 0 $((NUM_ACCELERATORS-1)))
 # export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
-# export CUDA_DEVICE_MAX_CONNECTIONS=1
-# export VLLM_ALLREDUCE_USE_SYMM_MEM=0
-# export VLLM_USE_NCCL_SYMM_MEM=0
-# export HYDRA_FULL_ERROR=1
-# export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export VLLM_ALLREDUCE_USE_SYMM_MEM=0
+export VLLM_USE_NCCL_SYMM_MEM=0
+export HYDRA_FULL_ERROR=1
+export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
 
 
 # Generate responses (load ckpt ONCE, then run all datasets sequentially)
@@ -112,8 +112,8 @@ outs_arg+="]"
 python -m verl.trainer.main_generation_multi \
   trainer.nnodes=${NNODES} \
   trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-  data.paths=${paths_arg} \
-  data.output_paths=${outs_arg} \
+  +data.paths=${paths_arg} \
+  +data.output_paths=${outs_arg} \
   data.prompt_key=prompt \
   data.n_samples=1 \
   model.path=${CHECKPOINT_PATH} \
