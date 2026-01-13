@@ -15,11 +15,11 @@ TASKS=(
     "OlympiadBench_math_en_comp"
 #    "OlympiadBench_math_en_cee"
     "OlympiadBench_math_zh_comp"
-#    "OlympiadBench_math_zh_cee"
+    "OlympiadBench_math_zh_cee"
     "OlympiadBench_physics_en_comp"
 #    "OlympiadBench_physics_en_cee"
 #    "OlympiadBench_physics_zh_comp"
-#    "OlympiadBench_physics_zh_cee"
+    "OlympiadBench_physics_zh_cee"
 )
 
 # Evaluate each task using the unified evaluation script

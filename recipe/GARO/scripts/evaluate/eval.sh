@@ -31,7 +31,6 @@ if [ -z "$PRIMUS_SAVE_CHECKPOINT_DIR" ]; then
     exit 1
 fi
 
-
 # Define data paths based on task
 DATA_PATH="${DATA_DIR}/GARO/test_data/${TASK}.parquet"
 TMP_PATH="${TMP_DIR}/${TASK}_${MODEL}_${STEP}.parquet"
@@ -73,7 +72,6 @@ else:
     row = rows[0]
     print("[DEBUG] First row keys:", list(row.keys()))
     print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
-    print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
     print("[DEBUG] First row prompt value:", row.get("prompt"))
 PY
 # end new-changes
@@ -84,11 +82,11 @@ PY
 # export CUDA_VISIBLE_DEVICES=0
 # export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
-export CUDA_DEVICE_MAX_CONNECTIONS=1
-export VLLM_ALLREDUCE_USE_SYMM_MEM=0
-export VLLM_USE_NCCL_SYMM_MEM=0
-export HYDRA_FULL_ERROR=1
-export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
+# export CUDA_DEVICE_MAX_CONNECTIONS=1
+# export VLLM_ALLREDUCE_USE_SYMM_MEM=0
+# export VLLM_USE_NCCL_SYMM_MEM=0
+# export HYDRA_FULL_ERROR=1
+# export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
 
 # Generate responses
 python -m verl.trainer.main_generation \
@@ -105,7 +103,7 @@ python -m verl.trainer.main_generation \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
   +rollout.pipeline_model_parallel_size=1 \
-  rollout.tensor_model_parallel_size=${NUM_ACCELERATORS} \
+  rollout.tensor_model_parallel_size=1 \
   +actor_rollout_ref.rollout.mode=async
 
 # Copy results to output directory using rclone
