@@ -201,7 +201,6 @@ _QWEN_HANDLER_CACHE: Dict[Tuple[str, str, str, bool], Any] = {}
 def _get_qwen_handler(cfg: JudgeConfig):
     from recipe.GARO.scripts.evaluate.qwen_primus import LLMHandler
 
-    # allow empty fields -> fall back to defaults inside LLMHandler
     api_key = cfg.qwen_api_key or os.getenv("QWEN_API_KEY", "")
     url = cfg.qwen_text_model_url or os.getenv("QWEN_TEXT_MODEL_URL", "")
     model_name = cfg.qwen_model_name or os.getenv("QWEN_MODEL_NAME", "qwen3-235b-instruct-trans-sg")
@@ -209,13 +208,19 @@ def _get_qwen_handler(cfg: JudgeConfig):
 
     cache_key = (api_key, url, model_name, verbose)
     if cache_key not in _QWEN_HANDLER_CACHE:
-        _QWEN_HANDLER_CACHE[cache_key] = LLMHandler(
-            text_model_name=model_name,
-            api_key=api_key or None,
-            text_model_url=url or None,
-            verbose=verbose,
-            timeout=cfg.timeout,
-        )
+        handler = LLMHandler(text_model_name=model_name)
+
+        if api_key:
+            handler.api_key = api_key
+        if url:
+            handler.text_model_url = url
+            if hasattr(handler, "vlm_model_url"):
+                handler.vlm_model_url = url
+
+        setattr(handler, "verbose", verbose)
+        setattr(handler, "timeout", cfg.timeout)
+
+        _QWEN_HANDLER_CACHE[cache_key] = handler
     return _QWEN_HANDLER_CACHE[cache_key]
 
 
