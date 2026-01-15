@@ -290,14 +290,41 @@ def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: Ju
     if torch.distributed.is_initialized() and not is_main_process():
         return 0.0
 
+    def _trunc(s: str, n: int = 400) -> str:
+        s = "" if s is None else str(s)
+        s = s.replace("\n", "\\n")
+        return s if len(s) <= n else (s[:n] + f"...(+{len(s)-n} chars)")
+
     try:
         out = call_judge_api(prompt, cfg)
         verdict = parse_judge_boxed(out)
+        if verdict is None:
+            # Only print errors (not successful verdicts) so that judge failures are visible.
+            print(
+                "[JUDGE_ERROR] parse_failed "
+                f"backend={cfg.backend} model={cfg.qwen_model_name if cfg.backend=='qwen_primus' else cfg.model} "
+                f"cache_key={ck} "
+                f"question={_trunc(question)} "
+                f"gt={_trunc(ground_truth)} "
+                f"pred={_trunc(pred_answer)} "
+                f"judge_out={_trunc(out, 800)}"
+            )
+            return 0.0
+
         score = 1.0 if verdict else 0.0
         _JUDGE_VERDICT_CACHE[ck] = score
         return score
     except Exception as e:
-        print(f"[WARN] judge failed: {type(e).__name__}: {e}.")
+        # Only print errors, but include concrete context for debugging.
+        print(
+            "[JUDGE_ERROR] api_call_failed "
+            f"backend={cfg.backend} model={cfg.qwen_model_name if cfg.backend=='qwen_primus' else cfg.model} "
+            f"cache_key={ck} "
+            f"err={type(e).__name__}: {e} "
+            f"question={_trunc(question)} "
+            f"gt={_trunc(ground_truth)} "
+            f"pred={_trunc(pred_answer)}"
+        )
         return 0.0
 
 

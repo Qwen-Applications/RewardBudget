@@ -26,6 +26,14 @@ class LLMHandler:
         self.coder_model_name = coder_model_name
         self.vlm_model_name = vlm_model_name
 
+        # NOTE: evaluation.py sets `handler.verbose` when using this as LLM-as-judge.
+        # Default should be silent to avoid flooding stdout with success logs.
+        self.verbose = getattr(self, "verbose", False)
+
+    def _log(self, *args, **kwargs):
+        if getattr(self, "verbose", False):
+            print(*args, **kwargs)
+
     def call_qwen3(self, messages: List[Dict[str, str]], stream: bool = True, model_name=None) -> Any:
         """
         调用Qwen3-max模型
@@ -37,7 +45,7 @@ class LLMHandler:
         Returns:
             模型响应
         """
-        print("processing text_model_name:", self.text_model_name)
+        self._log("processing text_model_name:", self.text_model_name)
         model_name = model_name or self.text_model_name
         prompt = self._convert_openai_messages_to_prompt(messages)
         request_data = self._bulid_request_data(prompt, model=model_name)
@@ -47,7 +55,19 @@ class LLMHandler:
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        response = requests.post(self.text_model_url, json=request_data, headers=headers, stream=stream)
+        # Add rich error context, but keep stdout quiet unless verbose.
+        try:
+            response = requests.post(self.text_model_url, json=request_data, headers=headers, stream=stream, timeout=getattr(self, "timeout", None))
+        except Exception as e:
+            raise RuntimeError(
+                f"qwen_primus request failed: {type(e).__name__}: {e}; url={self.text_model_url}; model={model_name}; request_id={request_data.get('request_id')}"
+            )
+
+        if not response.ok:
+            body_preview = (response.text or "")[:800]
+            raise RuntimeError(
+                f"qwen_primus HTTP {response.status_code}; url={self.text_model_url}; model={model_name}; request_id={request_data.get('request_id')}; body[:800]={body_preview!r}"
+            )
 
         client = sseclient.SSEClient(response)
  
@@ -68,7 +88,11 @@ class LLMHandler:
         start_time = time.time()
 
         for event in sse_client.events():        
-            raw = json.loads(event.data)
+            try:
+                raw = json.loads(event.data)
+            except Exception as e:
+                data_preview = (getattr(event, "data", "") or "")[:800]
+                raise RuntimeError(f"qwen_primus SSE json decode failed: {type(e).__name__}: {e}; data[:800]={data_preview!r}")
             
             # print(raw)
 
@@ -130,7 +154,7 @@ class LLMHandler:
     def _bulid_request_data(self, prompt, model="qwen3-235b-instruct-trans-sg"):
         request_id = uuid.uuid4().hex
         session_id = uuid.uuid4().hex
-        print(request_id)
+        self._log(request_id)
         request_data = {
             "session_id": session_id,
             "request_id": request_id,
