@@ -337,9 +337,76 @@ class ValidationGenerationsLogger:
     project_name: str = None
     experiment_name: str = None
 
+    def _save_generations_to_primus_output_dir(self, samples, step) -> bool:
+        """Persist validation generations locally to avoid logging large payloads to W&B.
+
+        If the environment variable `PRIMUS_OUTPUT_DIR` is set, generations will be appended
+        as JSONL under:
+
+            $PRIMUS_OUTPUT_DIR/val_generations/val_generations_rank{rank}.jsonl
+
+        Returns:
+            True if data was written locally, False otherwise.
+        """
+
+        import os
+
+        primus_output_dir = os.environ.get("PRIMUS_OUTPUT_DIR")
+        if not primus_output_dir:
+            # Hard fail to prevent accidental logging of thousands of generations to W&B.
+            raise RuntimeError(
+                "PRIMUS_OUTPUT_DIR is not set. Validation generations must be saved locally. "
+                "Please export PRIMUS_OUTPUT_DIR=/path/to/output before training."
+            )
+
+        import json
+        from pathlib import Path
+
+        # Best-effort rank inference (works for torchrun / ray / slurm).
+        rank = (
+            os.environ.get("RANK")
+            or os.environ.get("LOCAL_RANK")
+            or os.environ.get("SLURM_PROCID")
+            or "0"
+        )
+
+        out_dir = Path(primus_output_dir) / "val_generations"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"val_generations_rank{rank}.jsonl"
+
+        # Append one record per sample to avoid huge single-table payloads.
+        with out_file.open("a", encoding="utf-8") as f:
+            for i, sample in enumerate(samples):
+                rec = {"step": int(step), "idx": int(i)}
+                if isinstance(sample, (list, tuple)):
+                    if len(sample) >= 1:
+                        rec["input"] = sample[0]
+                    if len(sample) >= 2:
+                        rec["output"] = sample[1]
+                    if len(sample) >= 3:
+                        rec["score"] = sample[2]
+                    if len(sample) > 3:
+                        rec["extra"] = list(sample[3:])
+                else:
+                    rec["sample"] = sample
+
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+        return True
+
     def log(self, loggers, samples, step):
-        if "wandb" in loggers:
-            self.log_generations_to_wandb(samples, step)
+        # If PRIMUS_OUTPUT_DIR is set, persist generations locally and avoid uploading
+        # large validation payloads to W&B (which can be costly).
+        wrote_local = self._save_generations_to_primus_output_dir(samples, step)
+
+        # Never upload raw generations to W&B; only keep a lightweight scalar so users can monitor.
+        if "wandb" in loggers and wrote_local:
+            try:
+                import wandb
+
+                wandb.log({"val/generations_saved_local": len(samples)}, step=step)
+            except Exception:
+                pass
         if "swanlab" in loggers:
             self.log_generations_to_swanlab(samples, step)
         if "mlflow" in loggers:
@@ -350,8 +417,13 @@ class ValidationGenerationsLogger:
         if "tensorboard" in loggers:
             self.log_generations_to_tensorboard(samples, step)
 
-        if "vemlp_wandb" in loggers:
-            self.log_generations_to_vemlp_wandb(samples, step)
+        if "vemlp_wandb" in loggers and wrote_local:
+            try:
+                from volcengine_ml_platform import wandb as vemlp_wandb
+
+                vemlp_wandb.log({"val/generations_saved_local": len(samples)}, step=step)
+            except Exception:
+                pass
 
     def log_generations_to_vemlp_wandb(self, samples, step):
         from volcengine_ml_platform import wandb as vemlp_wandb
