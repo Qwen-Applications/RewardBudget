@@ -89,8 +89,8 @@ else
         custom_reward_function.name=compute_score \
         reward_model.reward_manager=dapo \
         +reward_model.reward_kwargs.max_resp_len=8192 \
-        reward_model.reward_kwargs.overlong_buffer_cfg.len=2048 \
-        reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=1.0 \
+        +reward_model.reward_kwargs.overlong_buffer_cfg.len=2048 \
+        +reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=1.0 \
         algorithm.adv_estimator=grpo \
         algorithm.use_kl_in_reward=False \
         algorithm.kl_ctrl.kl_coef=0.0 \
