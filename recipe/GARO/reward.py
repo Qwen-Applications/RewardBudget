@@ -83,3 +83,59 @@ def compute_score(
     gt = _normalize_answer(ground_truth)
 
     return 1.0 if pred == gt else 0.0
+
+def compute_score_2(
+    data_source: str,
+    solution_str: str,
+    ground_truth: str,
+    extra_info: Any = None,
+    **kwargs,
+) -> float:
+    """
+    verl-compatible reward function.
+
+    Rule:
+    1) Only extract answer from \boxed{...} (single backslash in output text).
+    2) Take the LAST boxed as prediction.
+    3) If extracted and matches ground_truth after light normalize => reward 1.0
+       else => reward 0.0
+    """
+    # verl often only looks at tail to avoid prompt noise
+    tail = solution_str[-300:] if solution_str is not None else ""
+
+    boxed = _extract_boxed_all(tail)
+    if not boxed:
+        return 0.0
+
+    pred = _normalize_answer(boxed[-1])
+    gt = _normalize_answer(ground_truth)
+
+    return 2.0 if pred == gt else 0.0
+
+def compute_score_5(
+    data_source: str,
+    solution_str: str,
+    ground_truth: str,
+    extra_info: Any = None,
+    **kwargs,
+) -> float:
+    """
+    verl-compatible reward function.
+
+    Rule:
+    1) Only extract answer from \boxed{...} (single backslash in output text).
+    2) Take the LAST boxed as prediction.
+    3) If extracted and matches ground_truth after light normalize => reward 1.0
+       else => reward 0.0
+    """
+    # verl often only looks at tail to avoid prompt noise
+    tail = solution_str[-300:] if solution_str is not None else ""
+
+    boxed = _extract_boxed_all(tail)
+    if not boxed:
+        return 0.0
+
+    pred = _normalize_answer(boxed[-1])
+    gt = _normalize_answer(ground_truth)
+
+    return 5.0 if pred == gt else 0.0
