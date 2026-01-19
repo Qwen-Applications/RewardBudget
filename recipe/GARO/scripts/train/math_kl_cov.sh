@@ -41,7 +41,6 @@ else
         data.prompt_key=prompt \
         data.truncation='left' \
         data.filter_overlong_prompts=False \
-        data.return_raw_chat=True \
         actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \
