@@ -86,7 +86,7 @@ else
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=${TRAIN_DATA}_DRGRPO \
+        trainer.experiment_name=${TRAIN_DATA}_DRGRPO1 \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=1000 \
         trainer.nnodes=${NNODES} \
