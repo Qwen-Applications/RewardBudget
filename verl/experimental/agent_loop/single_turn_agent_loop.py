@@ -35,7 +35,12 @@ class SingleTurnAgentLoop(AgentLoopBase):
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        messages = list(kwargs["raw_prompt"])
+        # Preferred input is `raw_prompt` (a chat-style list[dict]).
+        # Some pipelines only pass pre-tokenized `raw_prompt_ids`; support that too.
+        raw_prompt = kwargs.get("raw_prompt", None)
+        raw_prompt_ids = kwargs.get("raw_prompt_ids", None)
+
+        messages = list(raw_prompt) if raw_prompt is not None else None
         image_data = copy.deepcopy((kwargs.get("multi_modal_data") or {}).get("image", None))
 
         metrics = {}
@@ -43,6 +48,10 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
         # Use processor if available for multimodal support
         if self.processor is not None:
+            if messages is None:
+                raise KeyError(
+                    "SingleTurnAgentLoop requires `raw_prompt` when a processor is provided (multimodal mode)."
+                )
             raw_prompt = await self.loop.run_in_executor(
                 None,
                 lambda: self.processor.apply_chat_template(
@@ -55,12 +64,20 @@ class SingleTurnAgentLoop(AgentLoopBase):
             model_inputs = self.processor(text=[raw_prompt], images=image_data, return_tensors="pt")
             prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
         else:
-            prompt_ids = await self.loop.run_in_executor(
-                None,
-                lambda: self.tokenizer.apply_chat_template(
-                    messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
-                ),
-            )
+            if messages is not None:
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer.apply_chat_template(
+                        messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                    ),
+                )
+            elif raw_prompt_ids is not None and image_data is None:
+                # Fast path: prompt is already tokenized by the dataset.
+                prompt_ids = raw_prompt_ids.tolist() if hasattr(raw_prompt_ids, "tolist") else list(raw_prompt_ids)
+            else:
+                raise KeyError(
+                    "SingleTurnAgentLoop requires either `raw_prompt` (chat messages) or `raw_prompt_ids` (token ids)."
+                )
 
         with simple_timer("generate_sequences", metrics):
             output = await self.server_manager.generate(

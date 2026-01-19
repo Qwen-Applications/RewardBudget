@@ -65,9 +65,28 @@ class Tracking:
 
             import wandb
 
-            settings = None
-            if config and config["trainer"].get("wandb_proxy", None):
-                settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
+            trainer_cfg = {}
+            if isinstance(config, dict):
+                trainer_cfg = config.get("trainer", {}) or {}
+
+            # W&B can be slow/unreachable in some cluster environments. Allow bumping the
+            # init timeout via config or env to avoid spurious failures.
+            wandb_proxy = trainer_cfg.get("wandb_proxy", None)
+            init_timeout = trainer_cfg.get("wandb_init_timeout", None)
+            if init_timeout is None:
+                env_timeout = os.environ.get("WANDB_INIT_TIMEOUT", None)
+                if env_timeout is not None:
+                    try:
+                        init_timeout = int(env_timeout)
+                    except Exception:
+                        init_timeout = None
+            if init_timeout is None:
+                init_timeout = 180
+
+            settings_kwargs = {"init_timeout": init_timeout}
+            if wandb_proxy:
+                settings_kwargs["https_proxy"] = wandb_proxy
+            settings = wandb.Settings(**settings_kwargs)
             entity = os.environ.get("WANDB_ENTITY", None)
             wandb.init(project=project_name, name=experiment_name, entity=entity, config=config, settings=settings)
             self.logger["wandb"] = wandb

@@ -418,7 +418,11 @@ class AgentLoopWorkerBase:
                 processor=self.processor,
             )
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            output.extra_fields["raw_prompt"] = kwargs["raw_prompt"]
+            # Keep best-effort prompt info for downstream logging/debugging.
+            if "raw_prompt" in kwargs:
+                output.extra_fields["raw_prompt"] = kwargs["raw_prompt"]
+            elif "raw_prompt_ids" in kwargs:
+                output.extra_fields["raw_prompt_ids"] = kwargs["raw_prompt_ids"]
 
             # Some AgentLoop may have already computed the reward score, e.g SWE-agent.
 
