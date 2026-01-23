@@ -80,7 +80,7 @@ def standardized_ols_abs_coefs(df: pd.DataFrame):
     tmp = df.copy()
     tmp["V_z"] = zscore(tmp["acc"])
     tmp["H_z"] = zscore(tmp["H"])
-    tmp["kappa_z"] = zscore(tmp["kappa"])
+    tmp["kappa_z"] = zscore(np.log(tmp["kappa"]))
 
     tmp = tmp.replace([np.inf, -np.inf], np.nan).dropna(subset=["V_z", "H_z", "kappa_z"]).copy()
     if len(tmp) < 5:
@@ -122,7 +122,7 @@ def main():
     parser.add_argument("--inset_loc", type=str, default="upper right",
                         choices=["upper right", "upper left", "lower right", "lower left"])
 
-    # NEW: optional Step vs acc plot (no predictive horizon)
+    # optional Step vs acc plot (no predictive horizon)
     parser.add_argument("--plot_step_acc", action="store_true",
                         help="If set, also plot Step vs (scaled) acc without predictive horizon alignment.")
     args = parser.parse_args()
