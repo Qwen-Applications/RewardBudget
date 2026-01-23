@@ -1,6 +1,7 @@
 import os
 import re
 import argparse
+import math
 
 import numpy as np
 import pandas as pd
@@ -70,7 +71,7 @@ def zscore(s: pd.Series) -> pd.Series:
     return (s - mu) / sd
 
 
-def standardized_ols_abs_coefs(df: pd.DataFrame):
+def standardized_ols_abs_coefs(df: pd.DataFrame, use_log_kappa: bool = False):
     """
     Standardize V(=acc), H, kappa (numeric), then compare:
       (1) V ~ H
@@ -80,7 +81,12 @@ def standardized_ols_abs_coefs(df: pd.DataFrame):
     tmp = df.copy()
     tmp["V_z"] = zscore(tmp["acc"])
     tmp["H_z"] = zscore(tmp["H"])
-    tmp["kappa_z"] = zscore(np.log(tmp["kappa"]))
+    if use_log_kappa:
+        # kappa is positive (200/2000/5000), so log is safe
+        tmp["kappa_feat"] = np.log(tmp["kappa"].astype(float))
+    else:
+        tmp["kappa_feat"] = tmp["kappa"].astype(float)
+    tmp["kappa_z"] = zscore(tmp["kappa_feat"])
 
     tmp = tmp.replace([np.inf, -np.inf], np.nan).dropna(subset=["V_z", "H_z", "kappa_z"]).copy()
     if len(tmp) < 5:
@@ -119,8 +125,12 @@ def main():
     # optional inset bars for standardized abs coefficients
     parser.add_argument("--coef_inset", action="store_true",
                         help="Add inset bars comparing standardized abs coefficients.")
-    parser.add_argument("--inset_loc", type=str, default="upper right",
-                        choices=["upper right", "upper left", "lower right", "lower left"])
+    parser.add_argument("--inset_loc", type=str, default="lower left",
+                         choices=["upper right", "upper left", "lower right", "lower left"])
+    parser.add_argument("--log_kappa", action="store_true",
+                        help="Use log(kappa) (then z-score) in the regression/inset instead of raw kappa.")
+    parser.add_argument("--font_scale", type=float, default=2.0,
+                        help="Global font scale multiplier (default: 2.0).")
 
     # optional Step vs acc plot (no predictive horizon)
     parser.add_argument("--plot_step_acc", action="store_true",
@@ -171,7 +181,8 @@ def main():
 
     # --------- Main plot: Entropy vs acc_{t+h} ----------
     sns.set_theme(style="whitegrid")
-    plt.figure(figsize=(9, 6))
+    sns.set_context("talk", font_scale=args.font_scale)
+    plt.figure(figsize=(12, 8))
 
     ax = sns.scatterplot(
         data=data,
@@ -191,7 +202,7 @@ def main():
     overall = ols_line(data["H"].values, data["acc"].values, x_grid)
     if overall is not None:
         yhat, _ = overall
-        ax.plot(x_grid, yhat, color="black", linewidth=2.5, label="Overall OLS")
+        ax.plot(x_grid, yhat, color="black", linewidth=2.5, label="_nolegend_")
 
     # Group OLS lines
     kappa_sorted = sorted(data["kappa"].unique())
@@ -212,12 +223,13 @@ def main():
 
     # inset: standardized |coef|
     if args.coef_inset:
-        coefs = standardized_ols_abs_coefs(data)
+        coefs = standardized_ols_abs_coefs(data, use_log_kappa=args.log_kappa)
         if coefs is not None:
+            kappa_name = "logκ" if args.log_kappa else "κ"
             bars = [
                 ("|β_H|  (V~H)", coefs["abs_beta_H_m1"]),
-                ("|β_H|  (V~H+κ)", coefs["abs_beta_H_m2"]),
-                ("|β_κ|  (V~H+κ)", coefs["abs_beta_kappa_m2"]),
+                (f"|β_H|  (V~H+{kappa_name})", coefs["abs_beta_H_m2"]),
+                (f"|β_{kappa_name}|  (V~H+{kappa_name})", coefs["abs_beta_kappa_m2"]),
             ]
             loc_map = {
                 "upper right": (0.62, 0.58, 0.36, 0.36),
@@ -233,8 +245,7 @@ def main():
             ax_in.bar(range(len(values)), values)
             ax_in.set_xticks(range(len(values)))
             ax_in.set_xticklabels(labels, rotation=45, ha="right")
-            ax_in.set_title("Std. |coef|", fontsize=10)
-            ax_in.tick_params(axis="both", labelsize=8)
+            ax_in.set_title("Std. |coef|")
             ax_in.grid(True, axis="y", alpha=0.25)
 
     plt.tight_layout()
@@ -269,7 +280,8 @@ def main():
             raise RuntimeError("No data for Step vs acc plot.")
 
         sns.set_theme(style="whitegrid")
-        plt.figure(figsize=(9, 6))
+        sns.set_context("talk", font_scale=args.font_scale)
+        plt.figure(figsize=(12, 8))
 
         # line plot per kappa (no aggregation)
         ax2 = sns.lineplot(
