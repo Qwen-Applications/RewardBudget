@@ -114,7 +114,7 @@ def main():
     parser.add_argument("--dir", type=str, default="recipe/GARO/plot")
     parser.add_argument("--horizon", type=int, default=10,
                         help="Predictive horizon in Step units (t -> t+horizon). Default: 10.")
-    parser.add_argument("--save", type=str, default="", help="Optional output path for main plot (e.g. out.png)")
+    parser.add_argument("--save", type=str, default="recipe/GARO/plot", help="Optional output path for main plot (e.g. out.png)")
 
     # optional inset bars for standardized abs coefficients
     parser.add_argument("--coef_inset", action="store_true",
