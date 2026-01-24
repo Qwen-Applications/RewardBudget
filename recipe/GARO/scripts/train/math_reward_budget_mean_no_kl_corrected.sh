@@ -50,7 +50,7 @@ else
         actor_rollout_ref.actor.adaptive_beta.enable=False \
         actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \
         actor_rollout_ref.actor.adaptive_beta.beta_max=0.005 \
-        actor_rollout_ref.actor.optim.lr=2.828427125e-6 \
+        actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.actor.optim.lr_scheduler_type=constant \
@@ -77,7 +77,7 @@ else
         actor_rollout_ref.rollout.val_kwargs.n=1 \
         actor_rollout_ref.rollout.val_kwargs.do_sample=False \
         custom_reward_function.path=recipe/GARO/reward.py \
-        custom_reward_function.name=compute_score \
+        custom_reward_function.name=compute_score_root8 \
         algorithm.use_kl_in_reward=False \
         algorithm.adv_estimator=reward_budget_mean \
         algorithm.ref_sync_freq=20000000 \
