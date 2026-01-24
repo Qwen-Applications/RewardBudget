@@ -38,6 +38,7 @@ else
         data.max_response_length=8192 \
         data.train_batch_size=32 \
         data.gen_batch_size=96 \
+        data.filter_overlong_prompts=True \
         actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \
