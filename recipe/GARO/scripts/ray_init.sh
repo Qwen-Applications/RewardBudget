@@ -26,9 +26,7 @@ fi
 : "${RANK:=0}"
 : "${RAY_CLEANUP:=1}"
 : "${RAY_NODE_IP:=}"            # optional
-
-# Caller said they already set this in init.sh. If not set, default to /tmp/ray.
-: "${RAY_TMPDIR:=/tmp/ray}"
+: "${RAY_TMPDIR:=/tmp/ray}"      # user sets this in init.sh
 
 # Safety: never delete anything under /sls-log
 is_under_sls_log() {
@@ -46,6 +44,35 @@ is_under_sls_log() {
   return 1
 }
 
+ray_start_supports() {
+  local flag="$1"
+  ray start --help 2>/dev/null | grep -q -- "$flag"
+}
+
+# Best-effort: show what is listening on a port
+show_port_owner() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lntp 2>/dev/null | grep -E ":${port}\b" || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP -sTCP:LISTEN -n -P 2>/dev/null | grep ":${port} " || true
+  else
+    echo "(no ss/lsof available to inspect ports)"
+  fi
+}
+
+is_port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE ":${port}$"
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP -sTCP:LISTEN -n -P 2>/dev/null | grep -q ":${port} "
+  else
+    # If we cannot check, assume not in use
+    return 1
+  fi
+}
+
 cleanup_ray() {
   if [ "${RAY_CLEANUP}" != "1" ]; then
     echo "cleanup: skipped (RAY_CLEANUP=${RAY_CLEANUP})"
@@ -55,14 +82,14 @@ cleanup_ray() {
   echo "cleanup: ray stop --force"
   ray stop --force || true
 
-  echo "cleanup: kill leftover processes"
+  echo "cleanup: kill leftover ray processes"
   pkill -9 -f raylet >/dev/null 2>&1 || true
   pkill -9 -f gcs_server >/dev/null 2>&1 || true
   pkill -9 -f "ray::" >/dev/null 2>&1 || true
+  # Try to only kill Ray-managed redis (avoid killing system redis)
+  pkill -9 -f "redis-server.*ray" >/dev/null 2>&1 || true
 
   echo "cleanup: remove local ray state"
-  # These locations are where Ray most commonly persists session state.
-  # Removing them prevents 'session name does not match persisted value' errors.
   for p in /tmp/ray /tmp/ray_session* /dev/shm/ray "${HOME}/.ray" "${RAY_TMPDIR}"; do
     if is_under_sls_log "$p"; then
       echo "cleanup: SKIP deleting $p (under /sls-log)"
@@ -84,7 +111,6 @@ verify_nodes() {
 
   echo "verify: expecting ${expected} node(s)"
   for i in $(seq 1 "$retries"); do
-    # Count ALIVE mentions (works across many Ray versions)
     local alive
     alive=$(ray status 2>/dev/null | grep -E "\bALIVE\b" | wc -l | tr -d ' ' || echo 0)
     if [ "${alive}" -ge "${expected}" ]; then
@@ -105,27 +131,64 @@ init_ray() {
 
   if [ "${RANK}" -eq 0 ]; then
     echo "head: starting on ${MASTER_ADDR}:${RAY_PORT}"
+
+    # If port is already in use, do NOT start; this is the most common cause of
+    # "session name does not match persisted value" (ray connects to existing redis/KV).
+    echo "head: preflight check port ${RAY_PORT}"
+    if is_port_in_use "${RAY_PORT}"; then
+      echo "ERROR: RAY_PORT ${RAY_PORT} is already in use. This usually means an old Ray/redis is still running." >&2
+      echo "head: listener(s) on port ${RAY_PORT}:" >&2
+      show_port_owner "${RAY_PORT}" >&2
+      echo "Please stop the existing process (or pick a different RAY_PORT)." >&2
+      exit 1
+    fi
+
     cleanup_ray
 
-    # Most portable flags only
-    if [ -n "${RAY_NODE_IP}" ]; then
-      echo "head: using node ip ${RAY_NODE_IP}"
-      ray start --head --port="${RAY_PORT}" --node-ip-address="${RAY_NODE_IP}"
-    else
-      ray start --head --port="${RAY_PORT}"
+    # Re-check after cleanup
+    echo "head: re-check port ${RAY_PORT} after cleanup"
+    if is_port_in_use "${RAY_PORT}"; then
+      echo "ERROR: RAY_PORT ${RAY_PORT} is still in use after cleanup." >&2
+      echo "head: listener(s) on port ${RAY_PORT}:" >&2
+      show_port_owner "${RAY_PORT}" >&2
+      exit 1
     fi
+
+    # Build the most portable ray start command.
+    local -a cmd
+    cmd=(ray start --head --disable-usage-stats --port="${RAY_PORT}")
+
+    if [ -n "${RAY_NODE_IP}" ] && ray_start_supports "--node-ip-address"; then
+      echo "head: using node ip ${RAY_NODE_IP}"
+      cmd+=(--node-ip-address="${RAY_NODE_IP}")
+    fi
+
+    # Use the user-provided tmpdir if Ray supports it.
+    if ray_start_supports "--temp-dir"; then
+      cmd+=(--temp-dir="${RAY_TMPDIR}")
+    fi
+
+    echo "head: launching: ${cmd[*]}"
+    "${cmd[@]}"
 
     echo "head: started"
     verify_nodes
+
   else
     echo "worker: connecting to ${MASTER_ADDR}:${RAY_PORT}"
-    if [ -n "${RAY_NODE_IP}" ]; then
-      ray start --address="${MASTER_ADDR}:${RAY_PORT}" --node-ip-address="${RAY_NODE_IP}" || true
-    else
-      ray start --address="${MASTER_ADDR}:${RAY_PORT}" || true
+    local -a wcmd
+    wcmd=(ray start --address="${MASTER_ADDR}:${RAY_PORT}")
+
+    if [ -n "${RAY_NODE_IP}" ] && ray_start_supports "--node-ip-address"; then
+      wcmd+=(--node-ip-address="${RAY_NODE_IP}")
     fi
 
-    # Basic check
+    if ray_start_supports "--temp-dir"; then
+      wcmd+=(--temp-dir="${RAY_TMPDIR}")
+    fi
+
+    echo "worker: launching: ${wcmd[*]}"
+    "${wcmd[@]}" || true
     ray status >/dev/null 2>&1 || true
   fi
 }
