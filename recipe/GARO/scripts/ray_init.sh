@@ -32,6 +32,12 @@ fi
 : "${RAY_START_TIMEOUT:=45}"   # seconds; fail fast if `ray start` hangs
 : "${RAY_TMPDIR:=/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)}"
 : "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
+: "${RAY_DEBUG:=0}"            # set to 1 to enable extra shell tracing
+
+if [ "${RAY_DEBUG}" = "1" ]; then
+    echo "ray_init.sh: RAY_DEBUG=1 enabling xtrace"
+    set -x
+fi
 
 die() {
     echo "ERROR: $*" >&2
@@ -60,6 +66,20 @@ on_error() {
     exit ${rc}
 }
 trap on_error ERR
+
+on_term() {
+    local sig="$1"
+    echo "ray_init.sh received signal: ${sig}"
+    echo "--- ray status (on signal) ---"
+    ray status 2>/dev/null || true
+    echo "--- ray nodes (on signal) ---"
+    ray list nodes 2>/dev/null || true
+    echo "--- processes (on signal) ---"
+    ps aux | egrep "raylet|gcs_server|redis|dashboard|ray start|timeout" | grep -v grep || true
+    exit 143
+}
+trap 'on_term SIGTERM' SIGTERM
+trap 'on_term SIGINT' SIGINT
 
 is_port_in_use() {
     local port="$1"
@@ -133,8 +153,19 @@ run_ray_start_with_timeout() {
 
     if command -v timeout >/dev/null 2>&1; then
         echo "run_ray_start_with_timeout: using external timeout (${timeout_s}s)"
-        timeout "${timeout_s}s" "$@"
-        return $?
+        echo "run_ray_start_with_timeout: timeout path=$(command -v timeout)"
+        timeout --version >/dev/null 2>&1 && timeout --version | head -n 1 || true
+        echo "run_ray_start_with_timeout: launching command: $*"
+
+        # Prefer --foreground if supported (GNU timeout) to keep signals/output behavior predictable.
+        if timeout --help 2>/dev/null | grep -q -- '--foreground'; then
+            timeout --foreground "${timeout_s}s" "$@"
+        else
+            timeout "${timeout_s}s" "$@"
+        fi
+        local rc=$?
+        echo "run_ray_start_with_timeout: external timeout finished (rc=${rc})"
+        return ${rc}
     fi
 
     echo "run_ray_start_with_timeout: using watchdog (${timeout_s}s)"
@@ -279,6 +310,8 @@ init_ray() {
         mkdir -p "${RAY_TMPDIR}" || true
 
         echo "head: running ray start --head"
+        echo "head: ray start args: port=${RAY_PORT} gcs=${RAY_GCS_PORT} dashboard=${RAY_DASHBOARD_PORT} tmp=${RAY_TMPDIR} node_ip=${node_ip}" 
+
         # Start head with an isolated temp dir to avoid session-name collisions.
         # Wrap with timeout because `ray start` can hang in some environments.
         set +e
