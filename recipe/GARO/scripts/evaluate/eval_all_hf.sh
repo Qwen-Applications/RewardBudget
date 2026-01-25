@@ -13,9 +13,9 @@ if [ $# -ne 3 ]; then
 fi
 
 TASK_LIST="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
-MODEL="$1"
-STEP="$2"
-JOB_ID="$3"
+MODEL="hf"
+STEP="na"
+JOB_ID="na"
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
 TMP_DIR="/root/tmp"
@@ -49,9 +49,6 @@ done
 # HF 模型直接给 model id 或本地路径
 MODEL_ID="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B"
 CHECKPOINT_PATH="${MODEL_ID}"
-MODEL="hf"
-STEP="na"
-JOB_ID="na"
 
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_DIR}/GARO"
