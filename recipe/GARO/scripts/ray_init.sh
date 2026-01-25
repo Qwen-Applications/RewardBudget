@@ -221,6 +221,27 @@ run_cmd_with_timeout() {
     return $?
 }
 
+is_under_sls_log() {
+    # Returns 0 (true) if the given path is under /sls-log (directly or via symlink)
+    local p="$1"
+
+    # Fast path: direct prefix match
+    case "${p}" in
+        /sls-log|/sls-log/*) return 0 ;;
+    esac
+
+    # If realpath is available, resolve symlinks and check again
+    if command -v realpath >/dev/null 2>&1; then
+        local rp
+        rp=$(realpath -m "${p}" 2>/dev/null || true)
+        case "${rp}" in
+            /sls-log|/sls-log/*) return 0 ;;
+        esac
+    fi
+
+    return 1
+}
+
 cleanup_ray() {
     # Best-effort cleanup of stale Ray state (only when enabled)
     if [ "${RAY_CLEANUP}" != "1" ]; then
@@ -242,6 +263,10 @@ cleanup_ray() {
     # Remove each path separately so we can see where it hangs
     local t="${RAY_CLEANUP_TIMEOUT}"
     for p in /tmp/ray /tmp/ray_session* /dev/shm/ray "${HOME}/.ray" "${RAY_TMPDIR}"; do
+        if is_under_sls_log "${p}"; then
+            echo "cleanup: SKIP deleting ${p} because it is under /sls-log"
+            continue
+        fi
         # If glob doesn't match, keep moving
         if [ -e "${p}" ] || [ -L "${p}" ]; then
             echo "cleanup: rm -rf ${p} (timeout ${t}s)"
