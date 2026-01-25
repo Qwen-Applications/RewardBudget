@@ -30,6 +30,7 @@ fi
 : "${RAY_GCS_PORT:=10001}"
 : "${RAY_CLEANUP:=1}"
 : "${RAY_START_TIMEOUT:=45}"   # seconds; fail fast if `ray start` hangs
+: "${RAY_TMPDIR:=/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)}"
 : "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
 
 die() {
@@ -79,23 +80,44 @@ detect_node_ip() {
         return 0
     fi
 
-    # 2) If MASTER_ADDR resolves to a local interface IP, prefer it
-    if command -v getent >/dev/null 2>&1; then
-        local resolved
-        resolved=$(getent hosts "${MASTER_ADDR}" | awk '{print $1}' | head -n1)
-        if [ -n "${resolved}" ]; then
-            if command -v ip >/dev/null 2>&1; then
-                if ip -4 addr show | grep -q "${resolved}"; then
-                    echo "${resolved}"
-                    return 0
-                fi
-            fi
-        fi
+    # 2) If MASTER_ADDR is already an IP, prefer it
+    if [[ "${MASTER_ADDR}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "${MASTER_ADDR}"
+        return 0
     fi
 
-    # 3) Fallback: pick the first non-loopback IPv4 from local interfaces
-    if command -v ip >/dev/null 2>&1; then
-        ip -4 addr show | awk '/inet / && $2 !~ /^127\./ {print $2}' | cut -d/ -f1 | head -n1
+    # 3) Try python-based resolution + local IP inference (works in minimal images)
+    if command -v python >/dev/null 2>&1; then
+        python - <<'PY'
+import socket
+import os
+master = os.environ.get('MASTER_ADDR','')
+# Resolve MASTER_ADDR to an IP (may fail)
+resolved = ''
+try:
+    resolved = socket.gethostbyname(master) if master else ''
+except Exception:
+    resolved = ''
+# Infer local source IP by UDP connect trick
+local_ip = ''
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(('1.1.1.1', 80))
+    local_ip = s.getsockname()[0]
+except Exception:
+    local_ip = ''
+finally:
+    s.close()
+# Prefer resolved if it matches inferred local subnet (first two octets) else use local_ip
+if resolved and local_ip and resolved.split('.')[:2] == local_ip.split('.')[:2]:
+    print(resolved)
+elif local_ip:
+    print(local_ip)
+elif resolved:
+    print(resolved)
+else:
+    print('')
+PY
         return 0
     fi
 
@@ -110,10 +132,12 @@ run_ray_start_with_timeout() {
     local timeout_s="${RAY_START_TIMEOUT}"
 
     if command -v timeout >/dev/null 2>&1; then
+        echo "run_ray_start_with_timeout: using external timeout (${timeout_s}s)"
         timeout "${timeout_s}s" "$@"
         return $?
     fi
 
+    echo "run_ray_start_with_timeout: using watchdog (${timeout_s}s)"
     # Fallback: background + watchdog (no external timeout command)
     "$@" &
     local pid=$!
