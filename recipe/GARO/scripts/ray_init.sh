@@ -121,7 +121,7 @@ cleanup_ray() {
   pkill -9 -f "redis-server.*ray" >/dev/null 2>&1 || true
 
   echo "cleanup: remove local ray state"
-  for p in /tmp/ray /tmp/ray_session* /dev/shm/ray "${HOME}/.ray" "${RAY_TMPDIR}"; do
+  for p in /tmp/ray /tmp/ray/* /tmp/ray_session* /tmp/ray/session_* /dev/shm/ray "${HOME}/.ray" "${RAY_TMPDIR}"; do
     if is_under_sls_log "$p"; then
       echo "cleanup: SKIP deleting $p (under /sls-log)"
       continue
