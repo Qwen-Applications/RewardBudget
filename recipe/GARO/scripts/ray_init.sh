@@ -84,15 +84,21 @@ cleanup_ray() {
     fi
 
     echo "Cleaning up stale Ray state..."
+    echo "cleanup: before ray stop"
     ray stop --force >/dev/null 2>&1 || true
+    echo "cleanup: after ray stop"
+    echo "cleanup: killing ray processes"
     pkill -9 -f raylet >/dev/null 2>&1 || true
     pkill -9 -f gcs_server >/dev/null 2>&1 || true
     pkill -9 -f "ray::" >/dev/null 2>&1 || true
 
+    echo "cleanup: removing ray temp directories"
     rm -rf /tmp/ray /tmp/ray_session* /dev/shm/ray "${HOME}/.ray" 2>/dev/null || true
 
     # Clean our run tempdir if it already exists
     rm -rf "${RAY_TMPDIR}" 2>/dev/null || true
+
+    echo "cleanup: done"
 }
 
 wait_for_ray_ready() {
@@ -100,11 +106,14 @@ wait_for_ray_ready() {
     local interval=${2:-2}
 
     for _ in $(seq 1 "$retries"); do
+        echo "wait_for_ray_ready: probing ray status"
         if ray status >/dev/null 2>&1; then
+            echo "wait_for_ray_ready: ray status OK"
             return 0
         fi
         sleep "$interval"
     done
+    echo "wait_for_ray_ready: timed out waiting for ray"
     return 1
 }
 
@@ -156,6 +165,7 @@ init_ray() {
 
     if [ "${RANK}" -eq 0 ]; then
         echo "Starting Ray head node at ${MASTER_ADDR}:${RAY_PORT} ..."
+        echo "head: checking port availability"
 
         # Guard: if the provided ports are already in use, fail fast and instruct cleanup.
         if is_port_in_use "${RAY_PORT}"; then
@@ -168,9 +178,12 @@ init_ray() {
             die "RAY_GCS_PORT ${RAY_GCS_PORT} is already in use. Please stop the existing process or set a different RAY_GCS_PORT."
         fi
 
+        echo "head: invoking cleanup_ray"
         cleanup_ray
+        echo "head: cleanup_ray finished"
         mkdir -p "${RAY_TMPDIR}" || true
 
+        echo "head: running ray start --head"
         # Start head with an isolated temp dir to avoid session-name collisions.
         ray start --head \
             --port="${RAY_PORT}" \
@@ -178,7 +191,9 @@ init_ray() {
             --dashboard-host=0.0.0.0 \
             --dashboard-port="${RAY_DASHBOARD_PORT}" \
             --temp-dir="${RAY_TMPDIR}"
+        echo "head: ray start command returned"
 
+        echo "head: waiting for ray to become ready"
         if ! wait_for_ray_ready 30 2; then
             die "Ray head did not become ready in time (MASTER_ADDR=${MASTER_ADDR}, RAY_PORT=${RAY_PORT})."
         fi
@@ -192,8 +207,10 @@ init_ray() {
         sleep $(( (RANK % 5) + 1 ))
 
         for i in $(seq 1 "${max_retries}"); do
+            echo "worker: running ray start --address"
             # Use the provided address strictly
             ray start --address="${MASTER_ADDR}:${RAY_PORT}" --temp-dir="${RAY_TMPDIR}" || true
+            echo "worker: ray start command returned"
 
             # Give raylet a moment to come up
             sleep 3
