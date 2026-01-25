@@ -28,13 +28,9 @@ fi
 : "${RANK:=0}"
 : "${RAY_DASHBOARD_PORT:=8265}"
 : "${RAY_GCS_PORT:=10001}"
-
-# Per-run Ray temp dir to avoid session collisions; can be overridden.
-# (Does NOT change MASTER_ADDR / RAY_PORT contract.)
-: "${RAY_TMPDIR:=/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)}"
-
-# Whether to aggressively clean up stale ray processes/dirs before starting head.
 : "${RAY_CLEANUP:=1}"
+: "${RAY_START_TIMEOUT:=120}"  # seconds; fail fast if `ray start` hangs
+: "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
 
 die() {
     echo "ERROR: $*" >&2
@@ -74,6 +70,75 @@ is_port_in_use() {
         # If we cannot check, do not block execution
         return 1
     fi
+}
+
+detect_node_ip() {
+    # If user provided RAY_NODE_IP, use it.
+    if [ -n "${RAY_NODE_IP}" ]; then
+        echo "${RAY_NODE_IP}"
+        return 0
+    fi
+
+    # Try to infer a routable IPv4 address.
+    local ip=""
+    if command -v ip >/dev/null 2>&1; then
+        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
+    fi
+
+    if [ -z "${ip}" ] && command -v hostname >/dev/null 2>&1; then
+        # hostname -I may output multiple IPs
+        ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+
+    if [ -z "${ip}" ] && command -v python >/dev/null 2>&1; then
+        ip=$(python - <<'PY'
+import socket
+s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(('1.1.1.1', 80))
+    print(s.getsockname()[0])
+finally:
+    s.close()
+PY
+)
+    fi
+
+    if [ -z "${ip}" ]; then
+        # As a last resort, let Ray decide.
+        echo ""
+        return 0
+    fi
+
+    echo "${ip}"
+}
+
+run_ray_start_with_timeout() {
+    # Usage: run_ray_start_with_timeout <command...>
+    # Runs ray start with a timeout to prevent hanging forever.
+    local timeout_s="${RAY_START_TIMEOUT}"
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${timeout_s}s" "$@"
+        return $?
+    fi
+
+    # Fallback: background + watchdog (no external timeout command)
+    "$@" &
+    local pid=$!
+
+    local waited=0
+    while kill -0 "${pid}" >/dev/null 2>&1; do
+        if [ "${waited}" -ge "${timeout_s}" ]; then
+            echo "ray start timeout after ${timeout_s}s; killing pid ${pid}"
+            kill -9 "${pid}" >/dev/null 2>&1 || true
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    wait "${pid}"
+    return $?
 }
 
 cleanup_ray() {
@@ -167,6 +232,14 @@ init_ray() {
         echo "Starting Ray head node at ${MASTER_ADDR}:${RAY_PORT} ..."
         echo "head: checking port availability"
 
+        local node_ip
+        node_ip=$(detect_node_ip)
+        if [ -n "${node_ip}" ]; then
+            echo "head: using node ip address ${node_ip}"
+        else
+            echo "head: node ip auto-detect failed; letting Ray decide"
+        fi
+
         # Guard: if the provided ports are already in use, fail fast and instruct cleanup.
         if is_port_in_use "${RAY_PORT}"; then
             die "RAY_PORT ${RAY_PORT} is already in use. Please stop the existing Ray/processes (e.g., 'ray stop --force') or pick another RAY_PORT."
@@ -185,13 +258,37 @@ init_ray() {
 
         echo "head: running ray start --head"
         # Start head with an isolated temp dir to avoid session-name collisions.
-        ray start --head \
-            --port="${RAY_PORT}" \
-            --gcs-server-port="${RAY_GCS_PORT}" \
-            --dashboard-host=0.0.0.0 \
-            --dashboard-port="${RAY_DASHBOARD_PORT}" \
-            --temp-dir="${RAY_TMPDIR}"
-        echo "head: ray start command returned"
+        # Wrap with timeout because `ray start` can hang in some environments.
+        set +e
+        if [ -n "${node_ip}" ]; then
+            run_ray_start_with_timeout ray start --head \
+                --node-ip-address="${node_ip}" \
+                --port="${RAY_PORT}" \
+                --gcs-server-port="${RAY_GCS_PORT}" \
+                --dashboard-host=0.0.0.0 \
+                --dashboard-port="${RAY_DASHBOARD_PORT}" \
+                --temp-dir="${RAY_TMPDIR}"
+        else
+            run_ray_start_with_timeout ray start --head \
+                --port="${RAY_PORT}" \
+                --gcs-server-port="${RAY_GCS_PORT}" \
+                --dashboard-host=0.0.0.0 \
+                --dashboard-port="${RAY_DASHBOARD_PORT}" \
+                --temp-dir="${RAY_TMPDIR}"
+        fi
+        local ray_rc=$?
+        set -e
+        echo "head: ray start command returned (rc=${ray_rc})"
+        if [ "${ray_rc}" -ne 0 ]; then
+            echo "head: ray start failed or timed out; dumping quick diagnostics"
+            echo "head: ports listening snapshot"
+            if command -v ss >/dev/null 2>&1; then
+                ss -lntp 2>/dev/null || true
+            elif command -v netstat >/dev/null 2>&1; then
+                netstat -lntp 2>/dev/null || true
+            fi
+            die "Ray head start failed (rc=${ray_rc})."
+        fi
 
         echo "head: waiting for ray to become ready"
         if ! wait_for_ray_ready 30 2; then
@@ -208,8 +305,15 @@ init_ray() {
 
         for i in $(seq 1 "${max_retries}"); do
             echo "worker: running ray start --address"
-            # Use the provided address strictly
-            ray start --address="${MASTER_ADDR}:${RAY_PORT}" --temp-dir="${RAY_TMPDIR}" || true
+            local worker_ip
+            worker_ip=$(detect_node_ip)
+            set +e
+            if [ -n "${worker_ip}" ]; then
+                run_ray_start_with_timeout ray start --address="${MASTER_ADDR}:${RAY_PORT}" --node-ip-address="${worker_ip}" --temp-dir="${RAY_TMPDIR}"
+            else
+                run_ray_start_with_timeout ray start --address="${MASTER_ADDR}:${RAY_PORT}" --temp-dir="${RAY_TMPDIR}"
+            fi
+            set -e
             echo "worker: ray start command returned"
 
             # Give raylet a moment to come up
