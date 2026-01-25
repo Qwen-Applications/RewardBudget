@@ -33,6 +33,7 @@ fi
 : "${RAY_TMPDIR:=/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)}"
 : "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
 : "${RAY_DEBUG:=0}"            # set to 1 to enable extra shell tracing
+: "${RAY_CLEANUP_TIMEOUT:=30}"  # seconds; prevent cleanup rm -rf from hanging forever
 
 if [ "${RAY_DEBUG}" = "1" ]; then
     echo "ray_init.sh: RAY_DEBUG=1 enabling xtrace"
@@ -189,6 +190,37 @@ run_ray_start_with_timeout() {
     return $?
 }
 
+run_cmd_with_timeout() {
+    # Usage: run_cmd_with_timeout <timeout_seconds> <command...>
+    local t="$1"; shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        # Prefer --foreground if supported
+        if timeout --help 2>/dev/null | grep -q -- '--foreground'; then
+            timeout --foreground "${t}s" "$@"
+        else
+            timeout "${t}s" "$@"
+        fi
+        return $?
+    fi
+
+    # Fallback watchdog (no external timeout)
+    "$@" &
+    local pid=$!
+    local waited=0
+    while kill -0 "${pid}" >/dev/null 2>&1; do
+        if [ "${waited}" -ge "${t}" ]; then
+            echo "command timeout after ${t}s; killing pid ${pid}: $*"
+            kill -9 "${pid}" >/dev/null 2>&1 || true
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "${pid}"
+    return $?
+}
+
 cleanup_ray() {
     # Best-effort cleanup of stale Ray state (only when enabled)
     if [ "${RAY_CLEANUP}" != "1" ]; then
@@ -206,10 +238,22 @@ cleanup_ray() {
     pkill -9 -f "ray::" >/dev/null 2>&1 || true
 
     echo "cleanup: removing ray temp directories"
-    rm -rf /tmp/ray /tmp/ray_session* /dev/shm/ray "${HOME}/.ray" 2>/dev/null || true
 
-    # Clean our run tempdir if it already exists
-    rm -rf "${RAY_TMPDIR}" 2>/dev/null || true
+    # Remove each path separately so we can see where it hangs
+    local t="${RAY_CLEANUP_TIMEOUT}"
+    for p in /tmp/ray /tmp/ray_session* /dev/shm/ray "${HOME}/.ray" "${RAY_TMPDIR}"; do
+        # If glob doesn't match, keep moving
+        if [ -e "${p}" ] || [ -L "${p}" ]; then
+            echo "cleanup: rm -rf ${p} (timeout ${t}s)"
+            set +e
+            run_cmd_with_timeout "${t}" rm -rf "${p}" 2>/dev/null
+            local rc=$?
+            set -e
+            echo "cleanup: rm finished rc=${rc} for ${p}"
+        else
+            echo "cleanup: skip missing ${p}"
+        fi
+    done
 
     echo "cleanup: done"
 }
