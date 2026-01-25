@@ -23,6 +23,7 @@ done
 
 
 
+export RAY_TMPDIR=/tmp/ray
 export RAY_PORT=6379
 source recipe/GARO/scripts/ray_init.sh
 init_ray
