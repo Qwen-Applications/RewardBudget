@@ -34,6 +34,7 @@ fi
 : "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
 : "${RAY_DEBUG:=0}"            # set to 1 to enable extra shell tracing
 : "${RAY_CLEANUP_TIMEOUT:=30}"  # seconds; prevent cleanup rm -rf from hanging forever
+: "${RAY_ALLOW_SLS_LOG_TMPDIR:=0}"  # set to 1 to allow RAY_TMPDIR under /sls-log
 
 if [ "${RAY_DEBUG}" = "1" ]; then
     echo "ray_init.sh: RAY_DEBUG=1 enabling xtrace"
@@ -82,6 +83,7 @@ on_term() {
 trap 'on_term SIGTERM' SIGTERM
 trap 'on_term SIGINT' SIGINT
 
+
 is_port_in_use() {
     local port="$1"
     if command -v ss >/dev/null 2>&1; then
@@ -91,6 +93,21 @@ is_port_in_use() {
     else
         # If we cannot check, do not block execution
         return 1
+    fi
+}
+
+ray_start_supports() {
+    # Usage: ray_start_supports "--flag"
+    local flag="$1"
+    ray start --help 2>/dev/null | grep -q -- "${flag}"
+}
+
+normalize_ray_tmpdir() {
+    # Avoid using shared /sls-log as Ray temp dir unless explicitly allowed.
+    if is_under_sls_log "${RAY_TMPDIR}" && [ "${RAY_ALLOW_SLS_LOG_TMPDIR}" != "1" ]; then
+        local old="${RAY_TMPDIR}"
+        RAY_TMPDIR="/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)"
+        echo "WARNING: RAY_TMPDIR=${old} is under /sls-log (shared drive). Using local temp dir instead: ${RAY_TMPDIR}. Set RAY_ALLOW_SLS_LOG_TMPDIR=1 to override."
     fi
 }
 
@@ -342,6 +359,8 @@ init_ray() {
     local max_retries=30
     local retry_interval=10
 
+    normalize_ray_tmpdir
+
     # Strict contract: do not mutate MASTER_ADDR / RAY_PORT
     echo "[Ray ENV] MASTER_ADDR=${MASTER_ADDR} RAY_PORT=${RAY_PORT} NNODES=${NNODES} RANK=${RANK}"
 
@@ -379,29 +398,43 @@ init_ray() {
         mkdir -p "${RAY_TMPDIR}" || true
 
         echo "head: running ray start --head"
-        echo "head: ray start args: port=${RAY_PORT} gcs=${RAY_GCS_PORT} dashboard=${RAY_DASHBOARD_PORT} tmp=${RAY_TMPDIR} node_ip=${node_ip}" 
+        echo "head: ray start args: port=${RAY_PORT} gcs=${RAY_GCS_PORT} dashboard=${RAY_DASHBOARD_PORT} tmp=${RAY_TMPDIR} node_ip=${node_ip}"
 
-        # Start head with an isolated temp dir to avoid session-name collisions.
+        # Build ray start command with only supported flags (Ray CLI varies by version)
+        local -a cmd
+        cmd=(ray start --head --disable-usage-stats)
+
+        if [ -n "${node_ip}" ]; then
+            cmd+=(--node-ip-address="${node_ip}")
+        fi
+
+        cmd+=(--port="${RAY_PORT}")
+
+        # Optional flags by capability
+        if ray_start_supports "--gcs-server-port"; then
+            cmd+=(--gcs-server-port="${RAY_GCS_PORT}")
+        else
+            echo "WARNING: ray start does not support --gcs-server-port; skipping (Ray version differs)."
+        fi
+
+        if ray_start_supports "--dashboard-host"; then
+            cmd+=(--dashboard-host=0.0.0.0)
+        fi
+        if ray_start_supports "--dashboard-port"; then
+            cmd+=(--dashboard-port="${RAY_DASHBOARD_PORT}")
+        fi
+
+        if ray_start_supports "--temp-dir"; then
+            cmd+=(--temp-dir="${RAY_TMPDIR}")
+        else
+            echo "WARNING: ray start does not support --temp-dir; skipping."
+        fi
+
+        echo "head: launching: ${cmd[*]}"
+
         # Wrap with timeout because `ray start` can hang in some environments.
         set +e
-        if [ -n "${node_ip}" ]; then
-            run_ray_start_with_timeout ray start --head \
-                --disable-usage-stats \
-                --node-ip-address="${node_ip}" \
-                --port="${RAY_PORT}" \
-                --gcs-server-port="${RAY_GCS_PORT}" \
-                --dashboard-host=0.0.0.0 \
-                --dashboard-port="${RAY_DASHBOARD_PORT}" \
-                --temp-dir="${RAY_TMPDIR}"
-        else
-            run_ray_start_with_timeout ray start --head \
-                --disable-usage-stats \
-                --port="${RAY_PORT}" \
-                --gcs-server-port="${RAY_GCS_PORT}" \
-                --dashboard-host=0.0.0.0 \
-                --dashboard-port="${RAY_DASHBOARD_PORT}" \
-                --temp-dir="${RAY_TMPDIR}"
-        fi
+        run_ray_start_with_timeout "${cmd[@]}"
         local ray_rc=$?
         set -e
         echo "head: ray start command returned (rc=${ray_rc})"
@@ -433,12 +466,21 @@ init_ray() {
             echo "worker: running ray start --address"
             local worker_ip
             worker_ip=$(detect_node_ip)
-            set +e
-            if [ -n "${worker_ip}" ]; then
-                run_ray_start_with_timeout ray start --address="${MASTER_ADDR}:${RAY_PORT}" --node-ip-address="${worker_ip}" --temp-dir="${RAY_TMPDIR}"
-            else
-                run_ray_start_with_timeout ray start --address="${MASTER_ADDR}:${RAY_PORT}" --temp-dir="${RAY_TMPDIR}"
+
+            local -a wcmd
+            wcmd=(ray start --address="${MASTER_ADDR}:${RAY_PORT}")
+
+            if [ -n "${worker_ip}" ] && ray_start_supports "--node-ip-address"; then
+                wcmd+=(--node-ip-address="${worker_ip}")
             fi
+
+            if ray_start_supports "--temp-dir"; then
+                wcmd+=(--temp-dir="${RAY_TMPDIR}")
+            fi
+
+            echo "worker: launching: ${wcmd[*]}"
+            set +e
+            run_ray_start_with_timeout "${wcmd[@]}"
             set -e
             echo "worker: ray start command returned"
 
