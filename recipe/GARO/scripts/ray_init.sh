@@ -29,7 +29,7 @@ fi
 : "${RAY_DASHBOARD_PORT:=8265}"
 : "${RAY_GCS_PORT:=10001}"
 : "${RAY_CLEANUP:=1}"
-: "${RAY_START_TIMEOUT:=120}"  # seconds; fail fast if `ray start` hangs
+: "${RAY_START_TIMEOUT:=45}"   # seconds; fail fast if `ray start` hangs
 : "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
 
 die() {
@@ -73,43 +73,35 @@ is_port_in_use() {
 }
 
 detect_node_ip() {
-    # If user provided RAY_NODE_IP, use it.
+    # 1) If user explicitly provided RAY_NODE_IP, trust it
     if [ -n "${RAY_NODE_IP}" ]; then
         echo "${RAY_NODE_IP}"
         return 0
     fi
 
-    # Try to infer a routable IPv4 address.
-    local ip=""
+    # 2) If MASTER_ADDR resolves to a local interface IP, prefer it
+    if command -v getent >/dev/null 2>&1; then
+        local resolved
+        resolved=$(getent hosts "${MASTER_ADDR}" | awk '{print $1}' | head -n1)
+        if [ -n "${resolved}" ]; then
+            if command -v ip >/dev/null 2>&1; then
+                if ip -4 addr show | grep -q "${resolved}"; then
+                    echo "${resolved}"
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    # 3) Fallback: pick the first non-loopback IPv4 from local interfaces
     if command -v ip >/dev/null 2>&1; then
-        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
-    fi
-
-    if [ -z "${ip}" ] && command -v hostname >/dev/null 2>&1; then
-        # hostname -I may output multiple IPs
-        ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    fi
-
-    if [ -z "${ip}" ] && command -v python >/dev/null 2>&1; then
-        ip=$(python - <<'PY'
-import socket
-s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-try:
-    s.connect(('1.1.1.1', 80))
-    print(s.getsockname()[0])
-finally:
-    s.close()
-PY
-)
-    fi
-
-    if [ -z "${ip}" ]; then
-        # As a last resort, let Ray decide.
-        echo ""
+        ip -4 addr show | awk '/inet / && $2 !~ /^127\./ {print $2}' | cut -d/ -f1 | head -n1
         return 0
     fi
 
-    echo "${ip}"
+    # 4) Last resort: let Ray decide
+    echo ""
+    return 0
 }
 
 run_ray_start_with_timeout() {
@@ -133,6 +125,7 @@ run_ray_start_with_timeout() {
             kill -9 "${pid}" >/dev/null 2>&1 || true
             return 124
         fi
+        echo "ray start still running... ${waited}s"
         sleep 1
         waited=$((waited + 1))
     done
@@ -236,6 +229,11 @@ init_ray() {
         node_ip=$(detect_node_ip)
         if [ -n "${node_ip}" ]; then
             echo "head: using node ip address ${node_ip}"
+            if [[ "${MASTER_ADDR}" =~ ^[0-9] ]]; then
+                if [[ "${MASTER_ADDR}" != "${node_ip}" ]]; then
+                    echo "WARNING: MASTER_ADDR (${MASTER_ADDR}) != node_ip (${node_ip})"
+                fi
+            fi
         else
             echo "head: node ip auto-detect failed; letting Ray decide"
         fi
@@ -262,6 +260,7 @@ init_ray() {
         set +e
         if [ -n "${node_ip}" ]; then
             run_ray_start_with_timeout ray start --head \
+                --disable-usage-stats \
                 --node-ip-address="${node_ip}" \
                 --port="${RAY_PORT}" \
                 --gcs-server-port="${RAY_GCS_PORT}" \
@@ -270,6 +269,7 @@ init_ray() {
                 --temp-dir="${RAY_TMPDIR}"
         else
             run_ray_start_with_timeout ray start --head \
+                --disable-usage-stats \
                 --port="${RAY_PORT}" \
                 --gcs-server-port="${RAY_GCS_PORT}" \
                 --dashboard-host=0.0.0.0 \
