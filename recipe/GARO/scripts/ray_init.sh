@@ -24,13 +24,22 @@ fi
 # -------------------------------
 # Optional env (safe defaults)
 # -------------------------------
+
+# Track whether caller explicitly provided RAY_TMPDIR. If not provided, set a short default.
+RAY_TMPDIR_USER_SET=0
+if [ "${RAY_TMPDIR+set}" = "set" ]; then
+    RAY_TMPDIR_USER_SET=1
+else
+    # Short default path (avoid very long names): include port, rank, pid
+    RAY_TMPDIR="/tmp/ray_${RAY_PORT}_${RANK}_$$"
+fi
+
 : "${NNODES:=1}"
 : "${RANK:=0}"
 : "${RAY_DASHBOARD_PORT:=8265}"
 : "${RAY_GCS_PORT:=10001}"
 : "${RAY_CLEANUP:=1}"
 : "${RAY_START_TIMEOUT:=45}"   # seconds; fail fast if `ray start` hangs
-: "${RAY_TMPDIR:=/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)}"
 : "${RAY_NODE_IP:=}"           # if empty, auto-detect and pass to ray start
 : "${RAY_DEBUG:=0}"            # set to 1 to enable extra shell tracing
 : "${RAY_CLEANUP_TIMEOUT:=30}"  # seconds; prevent cleanup rm -rf from hanging forever
@@ -50,7 +59,7 @@ die() {
 on_error() {
     local rc=$?
     echo "ray_init.sh failed with exit code ${rc}"
-    echo "ENV: MASTER_ADDR=${MASTER_ADDR} RAY_PORT=${RAY_PORT} NNODES=${NNODES} RANK=${RANK} RAY_TMPDIR=${RAY_TMPDIR}"
+    echo "ENV: MASTER_ADDR=${MASTER_ADDR} RAY_PORT=${RAY_PORT} NNODES=${NNODES} RANK=${RANK} RAY_TMPDIR=${RAY_TMPDIR} (user_set=${RAY_TMPDIR_USER_SET})"
 
     # Best-effort diagnostics
     echo "--- ray status ---"
@@ -104,9 +113,16 @@ ray_start_supports() {
 
 normalize_ray_tmpdir() {
     # Avoid using shared /sls-log as Ray temp dir unless explicitly allowed.
+    # If the user explicitly set RAY_TMPDIR, do not modify it; only warn.
+
     if is_under_sls_log "${RAY_TMPDIR}" && [ "${RAY_ALLOW_SLS_LOG_TMPDIR}" != "1" ]; then
+        if [ "${RAY_TMPDIR_USER_SET}" = "1" ]; then
+            echo "WARNING: RAY_TMPDIR=${RAY_TMPDIR} is under /sls-log (shared drive). Caller explicitly set it, so this script will NOT modify it. Consider using a local /tmp path or set RAY_ALLOW_SLS_LOG_TMPDIR=1 if you really intend to use /sls-log."
+            return 0
+        fi
+
         local old="${RAY_TMPDIR}"
-        RAY_TMPDIR="/tmp/ray_${USER:-user}_${MASTER_ADDR}_${RAY_PORT}_$$_$(date +%s)"
+        RAY_TMPDIR="/tmp/ray_${RAY_PORT}_${RANK}_$$"
         echo "WARNING: RAY_TMPDIR=${old} is under /sls-log (shared drive). Using local temp dir instead: ${RAY_TMPDIR}. Set RAY_ALLOW_SLS_LOG_TMPDIR=1 to override."
     fi
 }
