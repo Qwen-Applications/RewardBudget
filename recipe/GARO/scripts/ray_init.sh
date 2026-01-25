@@ -27,6 +27,8 @@ fi
 : "${RAY_CLEANUP:=1}"
 : "${RAY_NODE_IP:=}"            # optional
 : "${RAY_TMPDIR:=/tmp/ray}"      # user sets this in init.sh
+: "${RAY_STOP_RETRIES:=5}"      # how many times to run ray stop --force
+: "${RAY_STOP_INTERVAL:=2}"     # seconds between ray stop attempts
 
 # Safety: never delete anything under /sls-log
 is_under_sls_log() {
@@ -73,14 +75,43 @@ is_port_in_use() {
   fi
 }
 
+ray_stop_until_clean() {
+  local retries="$RAY_STOP_RETRIES"
+  local interval="$RAY_STOP_INTERVAL"
+
+  echo "cleanup: ray stop --force (up to ${retries} attempts)"
+
+  for i in $(seq 1 "${retries}"); do
+    echo "cleanup: ray stop attempt ${i}/${retries}"
+    # Capture output to help debugging but do not fail the script on non-zero.
+    local out
+    out=$(ray stop --force 2>&1 || true)
+    if [ -n "${out}" ]; then
+      echo "cleanup: ray stop output: ${out}"
+    fi
+
+    # If ray reports no active processes, we still might have a lingering redis on the port.
+    # Prefer checking port availability when possible.
+    if ! is_port_in_use "${RAY_PORT}"; then
+      echo "cleanup: port ${RAY_PORT} is free after ray stop"
+      return 0
+    fi
+
+    echo "cleanup: port ${RAY_PORT} still in use; sleeping ${interval}s"
+    sleep "${interval}"
+  done
+
+  echo "cleanup: ray stop retries exhausted; port ${RAY_PORT} still in use"
+  return 1
+}
+
 cleanup_ray() {
   if [ "${RAY_CLEANUP}" != "1" ]; then
     echo "cleanup: skipped (RAY_CLEANUP=${RAY_CLEANUP})"
     return 0
   fi
 
-  echo "cleanup: ray stop --force"
-  ray stop --force || true
+  ray_stop_until_clean || true
 
   echo "cleanup: kill leftover ray processes"
   pkill -9 -f raylet >/dev/null 2>&1 || true
