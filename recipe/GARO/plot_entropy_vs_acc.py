@@ -216,9 +216,8 @@ def main():
         yhat_k, _ = fit
         ax.plot(x_grid, yhat_k, color=color_map[k], linewidth=2.0, alpha=0.95)
 
-    ax.set_title(f"Entropy vs Validation Accuracy (horizon = {horizon})")
     ax.set_xlabel(r"Entropy  $H_{\kappa, t}$")
-    ax.set_ylabel(r"Scaled val acc  $P_{\kappa, t+\mathrm{horizon}}$  (acc / group_id)")
+    ax.set_ylabel(r"Validation Accuracy $P_{\kappa, t+\mathrm{horizon}}$")
     ax.legend(title="kappa", loc="best")
 
     # inset: standardized |coef|
@@ -227,10 +226,10 @@ def main():
         if coefs is not None:
             kappa_name = "logκ" if args.log_kappa else "κ"
             bars = [
-                ("|β_H|  (V~H)", coefs["abs_beta_H_m1"]),
-                (f"|β_H|  (V~H+{kappa_name})", coefs["abs_beta_H_m2"]),
-                (f"|β_{kappa_name}|  (V~H+{kappa_name})", coefs["abs_beta_kappa_m2"]),
-            ]
+                (r"$|\beta_H|$" + "\n" + r"$(V\sim H)$", coefs["abs_beta_H_m1"]),
+                (r"$|\beta_H|$" + "\n" + rf"$(V\sim H+{kappa_name})$", coefs["abs_beta_H_m2"]),
+                (rf"$|\beta_{{{kappa_name}}}|$" + "\n" + rf"$(V\sim H+{kappa_name})$", coefs["abs_beta_kappa_m2"]),
+             ]
             loc_map = {
                 "upper right": (0.62, 0.58, 0.36, 0.36),
                 "upper left":  (0.02, 0.58, 0.36, 0.36),
@@ -242,11 +241,20 @@ def main():
 
             labels = [b[0] for b in bars]
             values = [b[1] for b in bars]
-            ax_in.bar(range(len(values)), values)
+            rects = ax_in.bar(range(len(values)), values)
             ax_in.set_xticks(range(len(values)))
-            ax_in.set_xticklabels(labels, rotation=45, ha="right")
+            # remove messy x tick labels/ticks; we annotate on bars instead
+            ax_in.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+            # remove y-axis tick labels like 0.0/0.25/0.50 (keep grid if you want)
+            ax_in.tick_params(axis="y", which="both", left=False, labelleft=False)
             ax_in.set_title("Std. |coef|")
             ax_in.grid(True, axis="y", alpha=0.25)
+            y_max = float(np.nanmax(values)) if len(values) else 0.0
+            dy = 0.02 * y_max if y_max > 0 else 0.01
+            for rect, txt in zip(rects, labels):
+                x = rect.get_x() + rect.get_width() / 2.0
+                y = rect.get_height()
+                ax_in.text(x, y + dy, txt, ha="center", va="bottom", fontsize=10)
 
     plt.tight_layout()
 
