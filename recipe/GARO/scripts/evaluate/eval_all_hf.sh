@@ -13,9 +13,9 @@ if [ $# -ne 3 ]; then
 fi
 
 TASK_LIST="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
-MODEL="hf"
-STEP="na"
-JOB_ID="na"
+MODEL="$1"
+STEP="$2"
+JOB_ID="$3"
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
 TMP_DIR="/root/tmp"
