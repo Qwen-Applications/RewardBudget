@@ -129,11 +129,19 @@ class RayEntropyTrainer(RayPPOTrainer):
                         else:
                             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
 
+                        if isinstance(gen_batch_output.meta_info, dict):
+                            timing_raw.update(gen_batch_output.meta_info.get("timing", {}))
+                            gen_batch_output.meta_info.pop("timing", None)
+
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         with simple_timer("gen_max", timing_raw):
                             gen_baseline_batch = deepcopy(gen_batch)
                             gen_baseline_batch.meta_info["do_sample"] = False
                             gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
+
+                            if isinstance(gen_baseline_output.meta_info, dict):
+                                timing_raw.update(gen_baseline_output.meta_info.get("timing", {}))
+                                gen_baseline_output.meta_info.pop("timing", None)
 
                             new_batch = new_batch.union(gen_baseline_output)
                             # compute reward model score on new_batch
