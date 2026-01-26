@@ -65,11 +65,127 @@ show_port_owner() {
   local port="$1"
   if command -v ss >/dev/null 2>&1; then
     ss -lntp 2>/dev/null | grep -E ":${port}\b" || true
+    return 0
   elif command -v lsof >/dev/null 2>&1; then
     lsof -iTCP -sTCP:LISTEN -n -P 2>/dev/null | grep ":${port} " || true
-  else
-    echo "(no ss/lsof available to inspect ports)"
+    return 0
   fi
+
+  # Fallback: python + /proc (works in minimal containers)
+  if command -v python >/dev/null 2>&1; then
+    PORT_TO_CHECK="${port}" python - <<'PY'
+import os
+import re
+import sys
+
+port = int(os.environ.get("PORT_TO_CHECK", "0"))
+if port <= 0:
+    print("(invalid port)")
+    sys.exit(0)
+
+# Convert port to hex (uppercase, no 0x), width 4.
+port_hex = format(port, '04X')
+
+# Parse /proc/net/tcp and /proc/net/tcp6 for LISTEN sockets on this port.
+# Fields: sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+# st == 0A means LISTEN.
+
+def find_inodes(path):
+    inodes = set()
+    try:
+        with open(path, 'r') as f:
+            next(f, None)  # skip header
+            for line in f:
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                local_addr = parts[1]
+                st = parts[3]
+                inode = parts[9]
+                # local_addr is like "0100007F:1F90"
+                if st != '0A':
+                    continue
+                if local_addr.endswith(':' + port_hex):
+                    inodes.add(inode)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return inodes
+
+inodes = set()
+inodes |= find_inodes('/proc/net/tcp')
+inodes |= find_inodes('/proc/net/tcp6')
+
+if not inodes:
+    print(f"(no LISTEN socket found for port {port})")
+    sys.exit(0)
+
+# Map socket inode -> PIDs by scanning /proc/<pid>/fd symlinks.
+results = []
+proc_dir = '/proc'
+
+for pid in os.listdir(proc_dir):
+    if not pid.isdigit():
+        continue
+    fd_dir = os.path.join(proc_dir, pid, 'fd')
+    try:
+        fds = os.listdir(fd_dir)
+    except Exception:
+        continue
+
+    for fd in fds:
+        p = os.path.join(fd_dir, fd)
+        try:
+            target = os.readlink(p)
+        except Exception:
+            continue
+        m = re.match(r'socket:\[(\d+)\]$', target)
+        if not m:
+            continue
+        inode = m.group(1)
+        if inode in inodes:
+            # Read cmdline
+            cmdline = ''
+            try:
+                with open(os.path.join(proc_dir, pid, 'cmdline'), 'rb') as f:
+                    raw = f.read().replace(b'\x00', b' ').strip()
+                    cmdline = raw.decode('utf-8', errors='replace')
+            except Exception:
+                cmdline = '(cmdline unavailable)'
+
+            # Read comm
+            comm = ''
+            try:
+                with open(os.path.join(proc_dir, pid, 'comm'), 'r') as f:
+                    comm = f.read().strip()
+            except Exception:
+                comm = '(comm unavailable)'
+
+            results.append((int(pid), comm, cmdline, inode))
+            break
+
+# Deduplicate by pid
+seen = set()
+uniq = []
+for r in sorted(results, key=lambda x: x[0]):
+    if r[0] in seen:
+        continue
+    seen.add(r[0])
+    uniq.append(r)
+
+print(f"Listening processes for port {port}:")
+for pid, comm, cmdline, inode in uniq:
+    print(f"  pid={pid} comm={comm} inode={inode} cmdline={cmdline}")
+
+if not uniq:
+    print("  (could not map inode to a PID; permission may be restricted)")
+PY
+    return 0
+  fi
+
+  echo "(no ss/lsof/python available to inspect ports)"
+  return 0
 }
 
 is_port_in_use() {
