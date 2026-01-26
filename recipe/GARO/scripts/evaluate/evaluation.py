@@ -374,7 +374,8 @@ def compute_score_router(
 # 5) Main eval
 # =====================
 def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
-                   judge_cfg: Optional[JudgeConfig] = None) -> None:
+                   judge_cfg: Optional[JudgeConfig] = None,
+                   output_jsonl: Optional[str] = None) -> None:
     if k <= 0:
         raise ValueError(f"k must be positive, got k={k}")
 
@@ -382,12 +383,49 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
     pass1_correct = 0.0
     passk_correct = 0.0
 
+    jsonl_f = None
+    if output_jsonl is not None and is_main_process():
+        dir_path = os.path.dirname(output_jsonl)
+        local_mkdir(dir_path)
+        jsonl_f = open(output_jsonl, "w", encoding="utf-8")
+
     for obj in _iter_records(file_path):
-        responses = obj["responses"]
+        responses = obj.get("responses", None)
         if not responses:
             continue
 
         total += 1
+
+        if jsonl_f is not None:
+            # If you ask for per-response correctness, we must score every response.
+            scores = [
+                compute_score_router(
+                    obj=obj,
+                    solution_str=sol,
+                    cfg=judge_cfg,
+                )
+                for sol in responses
+            ]
+            corrects = [1 if s > 0 else 0 for s in scores]
+
+            # pass@1 / pass@k are computed from the same per-response scores.
+            pass1_correct += float(corrects[0])
+
+            num_to_use = min(k, len(corrects))
+            passk_correct += 1.0 if any(corrects[:num_to_use]) else 0.0
+
+            jsonl_f.write(
+                json.dumps(
+                    {
+                        "prompt": obj.get("prompt", ""),
+                        "responses": responses,
+                        "response_correct": corrects,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            continue
 
         # pass@1
         pass1_correct += compute_score_router(
@@ -410,6 +448,10 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
                 break
 
         passk_correct += any_correct_k
+
+    if jsonl_f is not None:
+        jsonl_f.close()
+        print(f"Per-sample results written to: {output_jsonl}")
 
     if total == 0:
         print("No valid samples found in file.")
@@ -485,6 +527,13 @@ if __name__ == "__main__":
         help="LLM-as-judge backend. Default: qwen_primus",
     )
 
+    parser.add_argument(
+        "--output_jsonl",
+        type=str,
+        default=None,
+        help="Optional path to save per-sample JSONL: {prompt, responses, response_correct}",
+    )
+
     # ---- openai_compat ----
     parser.add_argument("--judge_api_base", type=str, default=os.getenv("JUDGE_API_BASE", ""))
     parser.add_argument("--judge_api_key", type=str, default=os.getenv("JUDGE_API_KEY", ""))
@@ -524,4 +573,4 @@ if __name__ == "__main__":
                 temperature=args.judge_temperature,
             )
 
-    eval_pass_at_k(args.file, args.k, args.output, judge_cfg=judge_cfg)
+    eval_pass_at_k(args.file, args.k, args.output, judge_cfg=judge_cfg, output_jsonl=args.output_jsonl)

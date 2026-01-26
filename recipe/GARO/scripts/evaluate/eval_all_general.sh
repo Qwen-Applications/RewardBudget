@@ -40,10 +40,12 @@ OUTPUT_PATH="${OUTPUT_DIR}/GARO/"
 DATA_PATHS=()
 TMP_PATHS=()
 EVAL_PATHS=()
+EVAL_JSONL_PATHS=()
 for t in "${TASKS[@]}"; do
   DATA_PATHS+=("${DATA_DIR}/GARO/test_data/${t}.parquet")
   TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}.parquet")
   EVAL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.json")
+  EVAL_JSONL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.details.jsonl")
 done
 
 # Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
@@ -131,12 +133,14 @@ for idx in "${!TASKS[@]}"; do
   t=${TASKS[$idx]}
   tmp=${TMP_PATHS[$idx]}
   evalp=${EVAL_PATHS[$idx]}
+  evalj=${EVAL_JSONL_PATHS[$idx]}
 
   rclone copy ${tmp} ${OUTPUT_PATH} --progress --transfers=80
 
   python3 recipe/GARO/scripts/evaluate/evaluation.py \
     --file ${tmp} --k 1 \
-    --output ${evalp}
+    --output ${evalp} \
+    --output_jsonl ${evalj}
 
-  echo "[INFO] Evaluation completed for ${t}. Results saved to ${evalp}"
+  echo "[INFO] Evaluation completed for ${t}. Results saved to ${evalp} (details: ${evalj})"
 done
