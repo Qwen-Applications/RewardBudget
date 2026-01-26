@@ -1,8 +1,9 @@
-# plot_val_acc_and_entropy.py
-# 用法：
-#   python plot_val_acc_and_entropy.py --dir /path/to/csvs --out_acc val_acc.png --out_entropy entropy.png
+# plot_early_intervention.py
 #
-# 需要的文件（在 --dir 目录下）：
+# Usage:
+#   python recipe/GARO/plot_early_intervention.py --dir recipe/GARO
+#
+# Expected files under --dir:
 #   # accuracy
 #   grpo.csv
 #   entropyinloss.csv
@@ -19,47 +20,81 @@
 
 import argparse
 import os
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 
 def read_step_and_metric(csv_path: str) -> pd.DataFrame:
+    """Return a DataFrame with columns: Step (int/float), Metric (float).
+
+    Metric is taken as the 2nd column of the csv (index 1), as requested.
+    """
     df = pd.read_csv(csv_path)
     if "Step" not in df.columns:
-        raise ValueError(f"{csv_path} 缺少 'Step' 列，实际列名：{list(df.columns)}")
+        raise ValueError(f"{csv_path} missing 'Step' column. Columns: {list(df.columns)}")
     if df.shape[1] < 2:
-        raise ValueError(f"{csv_path} 至少需要 2 列（Step + metric），但只有 {df.shape[1]} 列")
+        raise ValueError(f"{csv_path} must have at least 2 columns (Step + metric), got {df.shape[1]}")
 
     out = pd.DataFrame(
         {
             "Step": pd.to_numeric(df["Step"], errors="coerce"),
-            "Metric": pd.to_numeric(df.iloc[:, 1], errors="coerce"),  # 取第 2 列
+            "Metric": pd.to_numeric(df.iloc[:, 1], errors="coerce"),
         }
     ).dropna()
-
-    out = out.sort_values("Step")
-    return out
+    return out.sort_values("Step")
 
 
 def stitch_base_and_cont(base: pd.DataFrame, cont: pd.DataFrame) -> pd.DataFrame:
-    # base: 取 [0, 500)；cont: 取 [500, 1000]
-    base_part = base[(base["Step"] >= 0) & (base["Step"] < 500)]
-    cont_part = cont[(cont["Step"] >= 500) & (cont["Step"] <= 1000)]
+    """Stitch a base run and a continuation run into a single 0..1000 curve.
+
+    Requirement (your spec):
+      - base uses its own Step in [0, 500] as steps 0..500
+      - cont uses its own Step in [0, 500] as steps 500..1000
+        (If cont is already logged in absolute steps, normalize to start at 500 anyway.)
+    """
+    base_part = base[(base["Step"] >= 0) & (base["Step"] <= 500)].copy()
+
+    cont_part = cont.sort_values("Step").copy()
+    if not cont_part.empty:
+        cont_start = float(cont_part["Step"].min())
+        cont_part = cont_part[(cont_part["Step"] >= cont_start) & (cont_part["Step"] <= cont_start + 500)].copy()
+        cont_part["Step"] = cont_part["Step"] - cont_start + 500
 
     stitched = pd.concat([base_part, cont_part], ignore_index=True)
     stitched = stitched.sort_values("Step")
 
-    # 防止 step 重复（若有重复，保留后出现的那个）
+    # If a step repeats, keep the later one (continuation should win at step=500 if both exist)
     stitched = stitched.drop_duplicates(subset=["Step"], keep="last")
 
-    # 最终只保留 0..1000
-    stitched = stitched[(stitched["Step"] >= 0) & (stitched["Step"] <= 1000)]
-    return stitched
+    return stitched[(stitched["Step"] >= 0) & (stitched["Step"] <= 1000)]
+
+
+def ema_smooth(y: np.ndarray, ema_strength: float) -> np.ndarray:
+    """Exponential moving average.
+
+    Convention used here:
+      out[t] = (1-s)*y[t] + s*out[t-1]
+    s in [0, 1]. Larger means smoother (more inertia).
+
+    Note: s=1 makes the series constant at y[0]. This matches the requested 'ema_strength=1' plot.
+    """
+    if ema_strength <= 0.0 or len(y) == 0:
+        return y.astype(float, copy=False)
+
+    s = float(ema_strength)
+    out = np.empty_like(y, dtype=float)
+    out[0] = float(y[0])
+    for i in range(1, len(y)):
+        out[i] = (1.0 - s) * float(y[i]) + s * float(out[i - 1])
+    return out
 
 
 def load_three_series(dir_path: str, prefix: str):
-    """
-    prefix: "" for accuracy files, "_H" for entropy files
+    """Load GRPO and two stitched series (entropy-in-loss / entropy-in-reward).
+
+    prefix: "" for accuracy files, "_H" for entropy files.
     """
     def p(name: str) -> str:
         return os.path.join(dir_path, name)
@@ -69,11 +104,6 @@ def load_three_series(dir_path: str, prefix: str):
     eil_c = read_step_and_metric(p(f"entropyinloss{prefix}_cont.csv"))
     eir = read_step_and_metric(p(f"entropyinreward{prefix}.csv"))
     eir_c = read_step_and_metric(p(f"entropyinreward{prefix}_cont.csv"))
-
-    if prefix == "_H" and (not eir_c.empty) and (eir_c["Step"].max() < 500):
-        eir_c = eir_c.copy()
-        eir_c["Step"] = eir_c["Step"] + 500
-        eir_c = eir_c.sort_values("Step")
 
     grpo_0_1000 = (
         grpo[(grpo["Step"] >= 0) & (grpo["Step"] <= 1000)]
@@ -86,57 +116,83 @@ def load_three_series(dir_path: str, prefix: str):
     return grpo_0_1000, eil_0_1000, eir_0_1000
 
 
-def plot_three(
-    series,
-    y_label: str,
-    out_path: str,
-    show: bool = False,
-):
+def plot_acc(series, out_path: str, show: bool = False):
     grpo, eil, eir = series
 
-    plt.figure(figsize=(8, 4.8))
-    plt.plot(grpo["Step"], grpo["Metric"], label="GRPO")
-    plt.plot(eil["Step"], eil["Metric"], label="Entropy in Loss")
-    plt.plot(eir["Step"], eir["Metric"], label="Entropy in Reward")
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    ax.plot(grpo["Step"], grpo["Metric"], label="GRPO")
+    ax.plot(eil["Step"], eil["Metric"], label="Entropy in Loss")
+    ax.plot(eir["Step"], eir["Metric"], label="Entropy in Reward")
 
-    plt.xlabel("Step")
-    plt.ylabel(y_label)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Validation Accuracy")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
     print(f"Saved to: {out_path}")
 
     if show:
         plt.show()
-    plt.close()
+    plt.close(fig)
+
+
+def plot_entropy_dual(series, out_path: str, ema_strength: float = 0.9, show: bool = False):
+    """Entropy figure: for each run, plot raw (dashed) and EMA-smoothed (solid)."""
+    grpo, eil, eir = series
+
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+
+    def plot_one(df: pd.DataFrame, name: str):
+        df = df.sort_values("Step")
+        x = df["Step"].to_numpy()
+        y = df["Metric"].to_numpy()
+
+        # Raw (dashed) — slightly transparent so it doesn't overpower the EMA curve
+        ln_raw = ax.plot(x, y, linestyle="--", alpha=0.35, label=f"{name} raw")[0]
+
+        # EMA (solid) — same color as raw
+        y_ema = ema_smooth(y, ema_strength=ema_strength)
+        ax.plot(x, y_ema, linestyle="-", color=ln_raw.get_color(), label=f"{name} EMA({ema_strength:g})")
+
+    plot_one(grpo, "GRPO")
+    plot_one(eil, "Entropy in Loss")
+    plot_one(eir, "Entropy in Reward")
+
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Entropy")
+    ax.legend(ncol=2)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    print(f"Saved to: {out_path}")
+
+    if show:
+        plt.show()
+    plt.close(fig)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", type=str, default="recipe/GARO", help="csv 文件所在目录")
-    ap.add_argument("--out_acc", type=str, default="val_acc.png", help="accuracy 图输出路径")
-    ap.add_argument("--out_entropy", type=str, default="entropy.png", help="entropy 图输出路径")
-    ap.add_argument("--show", action="store_true", help="是否弹窗显示图")
+    ap.add_argument("--dir", type=str, default="recipe/GARO", help="csv directory")
+    ap.add_argument("--out_acc", type=str, default="val_acc.png", help="output path for accuracy plot")
+    ap.add_argument("--out_entropy", type=str, default="entropy.png", help="output path for entropy plot")
+    ap.add_argument(
+        "--ema_strength",
+        type=float,
+        default=0.9,
+        help="Entropy plot: EMA smoothing strength s in [0,1]. Solid line uses this s; dashed line is raw.",
+    )
+    ap.add_argument("--show", action="store_true", help="show the figures interactively")
     args = ap.parse_args()
 
     # 1) Validation Accuracy vs Step
     acc_series = load_three_series(args.dir, prefix="")
-    plot_three(
-        acc_series,
-        y_label="Validation Accuracy",
-        out_path=args.out_acc,
-        show=args.show,
-    )
+    plot_acc(acc_series, out_path=args.out_acc, show=args.show)
 
     # 2) Entropy vs Step (suffix _H)
     ent_series = load_three_series(args.dir, prefix="_H")
-    plot_three(
-        ent_series,
-        y_label="Entropy",
-        out_path=args.out_entropy,
-        show=args.show,
-    )
+    plot_entropy_dual(ent_series, out_path=args.out_entropy, ema_strength=args.ema_strength, show=args.show)
 
 
 if __name__ == "__main__":
