@@ -21,6 +21,8 @@ do
     counter=`cat ${PRIMUS_OUTPUT_DIR}/pre_common_ip_${PRIMUS_JOB_SUBMIT_TIMESTAMP}_*.txt | wc -l`
 done
 
+sleep 30
+rm -rf ${PRIMUS_OUTPUT_DIR}/common_ip_*.txt
 
 
 export RAY_TMPDIR=/tmp/ray
