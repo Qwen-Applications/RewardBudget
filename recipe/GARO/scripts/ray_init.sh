@@ -114,6 +114,11 @@ PY
   return 1
 }
 
+ray_is_healthy() {
+  # Return 0 if we can query ray status successfully.
+  ray status >/dev/null 2>&1
+}
+
 ray_stop_until_clean() {
   local retries="$RAY_STOP_RETRIES"
   local interval="$RAY_STOP_INTERVAL"
@@ -230,11 +235,16 @@ init_ray() {
   if [ "${RANK}" -eq 0 ]; then
     echo "head: starting on ${MASTER_ADDR}:${RAY_PORT}"
 
-    # If port is already in use, do NOT start; this is the most common cause of
-    # "session name does not match persisted value" (ray connects to existing redis/KV).
     echo "head: preflight check port ${RAY_PORT}"
     if is_port_listening "127.0.0.1" "${RAY_PORT}"; then
-      echo "ERROR: RAY_PORT ${RAY_PORT} is already in use. This usually means an old Ray/redis is still running." >&2
+      # If Ray is already running, just verify and return success (idempotent behavior).
+      if ray_is_healthy; then
+        echo "head: Ray already running on port ${RAY_PORT}; skipping start"
+        verify_nodes
+        return 0
+      fi
+
+      echo "ERROR: RAY_PORT ${RAY_PORT} is already in use, but Ray is not healthy. This usually means a stale Ray/redis is still running." >&2
       echo "head: listener(s) on port ${RAY_PORT}:" >&2
       show_port_owner "${RAY_PORT}" >&2
       echo "Please stop the existing process (or pick a different RAY_PORT)." >&2
@@ -243,10 +253,15 @@ init_ray() {
 
     cleanup_ray
 
-    # Re-check after cleanup
     echo "head: re-check port ${RAY_PORT} after cleanup"
     if is_port_listening "127.0.0.1" "${RAY_PORT}"; then
-      echo "ERROR: RAY_PORT ${RAY_PORT} is still in use after cleanup." >&2
+      if ray_is_healthy; then
+        echo "head: Ray already running on port ${RAY_PORT} after cleanup; skipping start"
+        verify_nodes
+        return 0
+      fi
+
+      echo "ERROR: RAY_PORT ${RAY_PORT} is still in use after cleanup, and Ray is not healthy." >&2
       echo "head: listener(s) on port ${RAY_PORT}:" >&2
       show_port_owner "${RAY_PORT}" >&2
       exit 1
