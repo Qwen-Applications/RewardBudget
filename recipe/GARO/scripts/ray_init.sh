@@ -29,6 +29,9 @@ fi
 : "${RAY_TMPDIR:=/tmp/ray}"      # user sets this in init.sh
 : "${RAY_STOP_RETRIES:=5}"      # how many times to run ray stop --force
 : "${RAY_STOP_INTERVAL:=2}"     # seconds between ray stop attempts
+: "${RAY_PORT_FALLBACK_START:=20000}"  # fallback port range start (single-node only)
+: "${RAY_PORT_FALLBACK_END:=40000}"    # fallback port range end (single-node only)
+: "${RAY_PORT_FALLBACK_TRIES:=5}"     # number of random attempts
 
 # Ensure Ray uses the caller-provided tmpdir (Ray 2.49.x supports env-based temp dir).
 export RAY_TMPDIR="${RAY_TMPDIR}"
@@ -230,6 +233,43 @@ PY
   return 1
 }
 
+pick_free_port() {
+  local start="$RAY_PORT_FALLBACK_START"
+  local end="$RAY_PORT_FALLBACK_END"
+  local tries="$RAY_PORT_FALLBACK_TRIES"
+
+  if command -v python >/dev/null 2>&1; then
+    START="${start}" END="${end}" TRIES="${tries}" python - <<'PY'
+import os, random, socket, sys
+start = int(os.environ.get('START','20000'))
+end = int(os.environ.get('END','40000'))
+tries = int(os.environ.get('TRIES','50'))
+for _ in range(tries):
+    p = random.randint(start, end)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(('127.0.0.1', p))
+        s.close()
+        print(p)
+        sys.exit(0)
+    except Exception:
+        try:
+            s.close()
+        except Exception:
+            pass
+        continue
+print(0)
+sys.exit(0)
+PY
+    return 0
+  fi
+
+  # If python is not available, no safe way to pick; return 0
+  echo 0
+  return 0
+}
+
 ray_is_healthy() {
   # Return 0 if we can query ray status successfully.
   ray status >/dev/null 2>&1
@@ -353,34 +393,42 @@ init_ray() {
 
     echo "head: preflight check port ${RAY_PORT}"
     if is_port_listening "127.0.0.1" "${RAY_PORT}"; then
-      # If Ray is already running, just verify and return success (idempotent behavior).
       if ray_is_healthy; then
         echo "head: Ray already running on port ${RAY_PORT}; skipping start"
         verify_nodes
         return 0
       fi
 
-      echo "ERROR: RAY_PORT ${RAY_PORT} is already in use, but Ray is not healthy. This usually means a stale Ray/redis is still running." >&2
-      echo "head: listener(s) on port ${RAY_PORT}:" >&2
-      show_port_owner "${RAY_PORT}" >&2
-      echo "Please stop the existing process (or pick a different RAY_PORT)." >&2
-      exit 1
-    fi
+      echo "head: port ${RAY_PORT} is in use but Ray is not healthy; attempting cleanup"
+      echo "head: listener(s) on port ${RAY_PORT}:"
+      show_port_owner "${RAY_PORT}" || true
 
-    cleanup_ray
+      cleanup_ray
 
-    echo "head: re-check port ${RAY_PORT} after cleanup"
-    if is_port_listening "127.0.0.1" "${RAY_PORT}"; then
-      if ray_is_healthy; then
-        echo "head: Ray already running on port ${RAY_PORT} after cleanup; skipping start"
-        verify_nodes
-        return 0
+      echo "head: re-check port ${RAY_PORT} after cleanup"
+      if is_port_listening "127.0.0.1" "${RAY_PORT}" && ! ray_is_healthy; then
+        echo "head: port ${RAY_PORT} still in use and Ray still not healthy"
+        echo "head: listener(s) on port ${RAY_PORT}:"
+        show_port_owner "${RAY_PORT}" || true
+
+        if [ "${NNODES}" != "1" ]; then
+          echo "ERROR: Cannot auto-change RAY_PORT for multi-node runs (NNODES=${NNODES}). Please set a unique RAY_PORT externally." >&2
+          exit 1
+        fi
+
+        local new_port
+        new_port=$(pick_free_port | tr -cd '0-9')
+        if [ -z "${new_port}" ] || [ "${new_port}" -eq 0 ]; then
+          echo "ERROR: Failed to find a free fallback port in range ${RAY_PORT_FALLBACK_START}-${RAY_PORT_FALLBACK_END}." >&2
+          exit 1
+        fi
+
+        echo "head: switching RAY_PORT from ${RAY_PORT} to ${new_port} (single-node fallback)"
+        export RAY_PORT="${new_port}"
       fi
-
-      echo "ERROR: RAY_PORT ${RAY_PORT} is still in use after cleanup, and Ray is not healthy." >&2
-      echo "head: listener(s) on port ${RAY_PORT}:" >&2
-      show_port_owner "${RAY_PORT}" >&2
-      exit 1
+    else
+      # Port not listening: still do cleanup to avoid stale on-disk session state causing mismatches.
+      cleanup_ray
     fi
 
     # Build the most portable ray start command.
