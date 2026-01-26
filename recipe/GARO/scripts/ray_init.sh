@@ -30,6 +30,15 @@ fi
 : "${RAY_STOP_RETRIES:=5}"      # how many times to run ray stop --force
 : "${RAY_STOP_INTERVAL:=2}"     # seconds between ray stop attempts
 
+# Ensure Ray uses the caller-provided tmpdir (Ray 2.49.x supports env-based temp dir).
+export RAY_TMPDIR="${RAY_TMPDIR}"
+
+# Avoid accidentally connecting to another cluster via environment variables.
+# These vars are sometimes set by launchers/frameworks.
+unset RAY_ADDRESS || true
+unset RAY_REDIS_ADDRESS || true
+unset RAY_GCS_ADDRESS || true
+
 # Safety: never delete anything under /sls-log
 is_under_sls_log() {
   local p="$1"
@@ -75,6 +84,36 @@ is_port_in_use() {
   fi
 }
 
+is_port_listening() {
+  local host="$1"
+  local port="$2"
+
+  # Prefer ss/lsof when available (local-only)
+  if [ "${host}" = "127.0.0.1" ] || [ "${host}" = "localhost" ]; then
+    if is_port_in_use "${port}"; then
+      return 0
+    fi
+  fi
+
+  # Reliable fallback: python TCP connect test (works in minimal images)
+  if command -v python >/dev/null 2>&1; then
+    CHK_HOST="${host}" CHK_PORT="${port}" python - <<'PY'
+import socket, os, sys
+host = os.environ.get('CHK_HOST', '127.0.0.1')
+port = int(os.environ.get('CHK_PORT', '0'))
+try:
+    s = socket.create_connection((host, port), timeout=0.5)
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PY
+    return $?
+  fi
+
+  return 1
+}
+
 ray_stop_until_clean() {
   local retries="$RAY_STOP_RETRIES"
   local interval="$RAY_STOP_INTERVAL"
@@ -92,7 +131,7 @@ ray_stop_until_clean() {
 
     # If ray reports no active processes, we still might have a lingering redis on the port.
     # Prefer checking port availability when possible.
-    if ! is_port_in_use "${RAY_PORT}"; then
+    if ! is_port_listening "127.0.0.1" "${RAY_PORT}"; then
       echo "cleanup: port ${RAY_PORT} is free after ray stop"
       return 0
     fi
@@ -185,6 +224,8 @@ verify_nodes() {
 
 init_ray() {
   echo "[Ray ENV] MASTER_ADDR=${MASTER_ADDR} RAY_PORT=${RAY_PORT} NNODES=${NNODES} RANK=${RANK} RAY_TMPDIR=${RAY_TMPDIR}"
+  echo "[Ray ENV] effective RAY_TMPDIR=${RAY_TMPDIR}"
+  env | grep -E '^RAY_' | sort || true
 
   if [ "${RANK}" -eq 0 ]; then
     echo "head: starting on ${MASTER_ADDR}:${RAY_PORT}"
@@ -192,7 +233,7 @@ init_ray() {
     # If port is already in use, do NOT start; this is the most common cause of
     # "session name does not match persisted value" (ray connects to existing redis/KV).
     echo "head: preflight check port ${RAY_PORT}"
-    if is_port_in_use "${RAY_PORT}"; then
+    if is_port_listening "127.0.0.1" "${RAY_PORT}"; then
       echo "ERROR: RAY_PORT ${RAY_PORT} is already in use. This usually means an old Ray/redis is still running." >&2
       echo "head: listener(s) on port ${RAY_PORT}:" >&2
       show_port_owner "${RAY_PORT}" >&2
@@ -204,7 +245,7 @@ init_ray() {
 
     # Re-check after cleanup
     echo "head: re-check port ${RAY_PORT} after cleanup"
-    if is_port_in_use "${RAY_PORT}"; then
+    if is_port_listening "127.0.0.1" "${RAY_PORT}"; then
       echo "ERROR: RAY_PORT ${RAY_PORT} is still in use after cleanup." >&2
       echo "head: listener(s) on port ${RAY_PORT}:" >&2
       show_port_owner "${RAY_PORT}" >&2
@@ -220,11 +261,6 @@ init_ray() {
       cmd+=(--node-ip-address="${RAY_NODE_IP}")
     fi
 
-    # Use the user-provided tmpdir if Ray supports it.
-    if ray_start_supports "--temp-dir"; then
-      cmd+=(--temp-dir="${RAY_TMPDIR}")
-    fi
-
     echo "head: launching: ${cmd[*]}"
     "${cmd[@]}"
 
@@ -238,10 +274,6 @@ init_ray() {
 
     if [ -n "${RAY_NODE_IP}" ] && ray_start_supports "--node-ip-address"; then
       wcmd+=(--node-ip-address="${RAY_NODE_IP}")
-    fi
-
-    if ray_start_supports "--temp-dir"; then
-      wcmd+=(--temp-dir="${RAY_TMPDIR}")
     fi
 
     echo "worker: launching: ${wcmd[*]}"

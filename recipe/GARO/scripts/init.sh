@@ -3,7 +3,7 @@
 
 # bash scripts/install_vllm_sglang_mcore.sh
 pip install --no-deps -e .
-pip install -U latex2sympy2_extended math_verify sseclient-py ray[default]
+pip install latex2sympy2_extended math_verify sseclient-py
 
 wandb login REDACTED_WANDB_KEY
 hf auth login --token REDACTED_HF_TOKEN
