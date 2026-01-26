@@ -314,10 +314,9 @@ def main():
             ax=ax2,
         )
 
-        ax2.set_title("Step vs Validation Accuracy (no horizon)")
         ax2.set_xlabel("Step")
-        ax2.set_ylabel("Scaled val acc (acc / group_id)")
-        ax2.legend(title="kappa", loc="best")
+        ax2.set_ylabel("Validation Accuracy")
+        ax2.legend(title="kappa", loc="lower right")
 
         plt.tight_layout()
 
