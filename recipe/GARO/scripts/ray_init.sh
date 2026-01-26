@@ -135,6 +135,27 @@ cleanup_ray() {
   echo "cleanup: done"
 }
 
+get_node_count() {
+  # Prefer `ray list nodes` when available (newer Ray).
+  if ray list nodes >/dev/null 2>&1; then
+    ray list nodes 2>/dev/null | grep -E "\bALIVE\b" | wc -l | tr -d ' '
+    return 0
+  fi
+
+  # Fallback for older Ray: `ray status` prints active nodes as lines like:
+  #   1 node_xxxxx...
+  # Count those lines.
+  # Avoid pipefail-induced double-output by not using `|| echo 0` in a pipeline.
+  local n
+  n=$(ray status 2>/dev/null | grep -E "^\s*[0-9]+\s+node_" | wc -l | tr -d ' ' || true)
+  if [ -z "${n}" ]; then
+    echo 0
+  else
+    echo "${n}"
+  fi
+  return 0
+}
+
 verify_nodes() {
   local expected="$NNODES"
   local retries=30
@@ -143,7 +164,12 @@ verify_nodes() {
   echo "verify: expecting ${expected} node(s)"
   for i in $(seq 1 "$retries"); do
     local alive
-    alive=$(ray status 2>/dev/null | grep -E "\bALIVE\b" | wc -l | tr -d ' ' || echo 0)
+    alive=$(get_node_count)
+    # Sanitize in case of unexpected whitespace
+    alive=$(echo "${alive}" | tr -cd '0-9')
+    if [ -z "${alive}" ]; then
+      alive=0
+    fi
     if [ "${alive}" -ge "${expected}" ]; then
       echo "verify: OK (${alive}/${expected})"
       return 0
