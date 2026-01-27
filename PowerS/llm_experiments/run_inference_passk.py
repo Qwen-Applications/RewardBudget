@@ -729,7 +729,7 @@ def main() -> None:
     parser.add_argument(
         "--output_dir",
         type=str,
-        ddefault=os.path.expandvars("${OUTPUT_DIR}/GARO/"),
+        default=os.path.expandvars("${OUTPUT_DIR}/GARO/"),
         help=(
             "Output directory (parent). For verl backend, outputs are written under <output_dir>/GARO. "
             "For legacy backends, jsonl + summary are written directly under <output_dir>."
