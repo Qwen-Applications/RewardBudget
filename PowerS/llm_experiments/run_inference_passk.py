@@ -9,9 +9,15 @@ This script is designed for "bring-your-own-checkpoint" evaluation:
   - datasets: comma-separated dataset names (e.g. math500,amc23,...)
   - k: number of generations per prompt (pass@k)
 
-It writes:
+It writes (legacy backends: vllm/hf):
   1) <output_dir>/<dataset>.generations.jsonl  (all generations + grading)
   2) <output_dir>/passk_summary.json           (pass@k per dataset)
+
+It writes (verl backend, matching recipe/GARO/scripts/evaluate/eval_all.sh):
+  1) <output_dir>/GARO/<dataset>_<run_tag>.parquet           (responses in parquet)
+  2) <output_dir>/GARO/<dataset>_<run_tag>.eval.json         (summary metrics)
+  3) <output_dir>/GARO/<dataset>_<run_tag>.eval.details.jsonl (optional per-sample correctness)
+  4) <output_dir>/GARO/passk_summary.json                    (aggregated metrics)
 
 Dataset resolution follows a pragmatic heuristic:
 
@@ -28,6 +34,9 @@ import datetime as _dt
 import json
 import os
 import random
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +68,14 @@ try:
     _HAS_TORCH = True
 except Exception:  # pragma: no cover
     _HAS_TORCH = False
+
+
+try:
+    import importlib.util as _importlib_util
+
+    _HAS_VERL = _importlib_util.find_spec("verl") is not None
+except Exception:  # pragma: no cover
+    _HAS_VERL = False
 
 
 from grader_utils.math_grader import grade_answer
@@ -186,6 +203,140 @@ def _safe_grade(ans: str, gt: str) -> int:
         return int(grade_answer(ans, gt))
     except Exception:
         return 0
+
+
+# -----------------------------
+# eval_all.sh-compatible (verl)
+# -----------------------------
+
+
+def _set_eval_all_env_defaults() -> None:
+    """Best-effort defaults mirroring recipe/GARO/scripts/evaluate/eval_all.sh exports."""
+
+    # Only set defaults if user didn't set them.
+    os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")
+    os.environ.setdefault("VLLM_ALLREDUCE_USE_SYMM_MEM", "0")
+    os.environ.setdefault("VLLM_USE_NCCL_SYMM_MEM", "0")
+    os.environ.setdefault("HYDRA_FULL_ERROR", "1")
+    os.environ.setdefault("TORCH_SYMM_MEM_DISABLE_MULTICAST", "1")
+
+
+def _sanitize_tag(s: str) -> str:
+    s = s.strip()
+    if not s:
+        return "run"
+    # Keep it filename-safe.
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
+    return s.strip("._-") or "run"
+
+
+def _default_run_tag(ckpt: str) -> str:
+    base = Path(ckpt).name or "ckpt"
+    return _sanitize_tag(base)
+
+
+def _hydra_list_str(items: Sequence[Union[str, Path]]) -> str:
+    # Hydra list syntax, safe quoting via json.
+    return "[" + ",".join(json.dumps(str(x)) for x in items) + "]"
+
+
+def _run_cmd(cmd: List[str], cwd: Path, env: Optional[Dict[str, str]] = None) -> None:
+    joined = " ".join(cmd)
+    print(f"[CMD] (cwd={cwd}) {joined}")
+    subprocess.run(cmd, cwd=str(cwd), env=env, check=True)
+
+
+def _run_verl_generation_multi(
+    *,
+    project_root: Path,
+    ckpt: str,
+    data_paths: Sequence[Path],
+    output_paths: Sequence[Path],
+    nnodes: int,
+    n_gpus_per_node: int,
+    n_samples: int,
+    temperature: float,
+    top_p: float,
+    prompt_key: str,
+    prompt_length: int,
+    response_length: int,
+    trust_remote_code: bool,
+    tensor_model_parallel_size: int,
+    pipeline_model_parallel_size: int,
+    actor_rollout_mode: str,
+    verl_batch_size: int,
+) -> None:
+    """Run verl.trainer.main_generation_multi similarly to eval_all.sh."""
+
+    if temperature == 0.0 and n_samples != 1:
+        raise ValueError(
+            "verl.trainer.main_generation_multi asserts: when temperature=0, n_samples must be 1. "
+            "Set --temperature > 0 to sample multiple responses (k>1)."
+        )
+
+    # Ensure parent directories exist (verl will create as needed, but being explicit helps).
+    for p in output_paths:
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "verl.trainer.main_generation_multi",
+        f"trainer.nnodes={int(nnodes)}",
+        f"trainer.n_gpus_per_node={int(n_gpus_per_node)}",
+        f"+data.paths={_hydra_list_str(data_paths)}",
+        f"+data.output_paths={_hydra_list_str(output_paths)}",
+        f"data.prompt_key={prompt_key}",
+        f"data.n_samples={int(n_samples)}",
+        f"data.batch_size={int(verl_batch_size)}",
+        f"model.path={ckpt}",
+        # main_generation_multi currently reads trust_remote_code from config.data (not config.model).
+        # We set both to be robust.
+        f"+data.trust_remote_code={str(bool(trust_remote_code))}",
+        f"+model.trust_remote_code={str(bool(trust_remote_code))}",
+        f"rollout.temperature={float(temperature)}",
+        f"rollout.top_p={float(top_p)}",
+        f"rollout.prompt_length={int(prompt_length)}",
+        f"rollout.response_length={int(response_length)}",
+        f"rollout.tensor_model_parallel_size={int(tensor_model_parallel_size)}",
+        f"+rollout.pipeline_model_parallel_size={int(pipeline_model_parallel_size)}",
+        f"+actor_rollout_ref.rollout.mode={actor_rollout_mode}",
+    ]
+
+    # Mirror eval_all.sh environment knobs (best-effort).
+    _set_eval_all_env_defaults()
+    _run_cmd(cmd, cwd=project_root)
+
+
+def _run_recipe_evaluation(
+    *,
+    project_root: Path,
+    file_path: Path,
+    k: int,
+    output_json: Path,
+    output_jsonl: Optional[Path],
+    judge_backend: Optional[str],
+) -> None:
+    eval_script = project_root / "recipe" / "GARO" / "scripts" / "evaluate" / "evaluation.py"
+    if not eval_script.exists():
+        raise FileNotFoundError(f"Cannot find evaluation.py at: {eval_script}")
+
+    cmd = [
+        sys.executable,
+        str(eval_script),
+        "--file",
+        str(file_path),
+        "--k",
+        str(int(k)),
+        "--output",
+        str(output_json),
+    ]
+    if output_jsonl is not None:
+        cmd += ["--output_jsonl", str(output_jsonl)]
+    if judge_backend:
+        cmd += ["--judge_backend", judge_backend]
+
+    _run_cmd(cmd, cwd=project_root)
 
 
 # -----------------------------
@@ -538,14 +689,20 @@ def main() -> None:
         "--output_dir",
         type=str,
         default="outputs/inference",
-        help="Output directory for jsonl + summary",
+        help=(
+            "Output directory (parent). For verl backend, outputs are written under <output_dir>/GARO. "
+            "For legacy backends, jsonl + summary are written directly under <output_dir>."
+        ),
     )
     parser.add_argument(
         "--backend",
         type=str,
-        choices=["vllm", "hf"],
-        default="vllm" if _HAS_VLLM else "hf",
-        help="Generation backend (default: vllm if installed)",
+        choices=["verl", "vllm", "hf"],
+        default="verl" if (Path(__file__).resolve().parents[2] / "verl").exists() else ("vllm" if _HAS_VLLM else "hf"),
+        help=(
+            "Generation backend. 'verl' matches recipe/GARO/scripts/evaluate/eval_all.sh "
+            "(calls verl.trainer.main_generation_multi and recipe evaluation)."
+        ),
     )
     parser.add_argument(
         "--batch_size",
@@ -582,7 +739,7 @@ def main() -> None:
         "--tensor_parallel_size",
         type=int,
         default=1,
-        help="vLLM tensor parallel size",
+        help="Tensor parallel size (vLLM) / rollout.tensor_model_parallel_size (verl)",
     )
     parser.add_argument(
         "--dtype",
@@ -608,15 +765,254 @@ def main() -> None:
         help="Also store rendered prompt_text in jsonl (can be large)",
     )
 
+    # ---- verl (eval_all.sh-compatible) knobs ----
+    parser.add_argument(
+        "--run_tag",
+        type=str,
+        default="",
+        help=(
+            "Tag used in output filenames for verl backend. If empty, derived from --model/--step or --ckpt basename."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="",
+        help="Optional model name used to build default run_tag (verl backend only).",
+    )
+    parser.add_argument(
+        "--step",
+        type=str,
+        default="",
+        help="Optional step used to build default run_tag (verl backend only).",
+    )
+    parser.add_argument(
+        "--tmp_dir",
+        type=str,
+        default=os.environ.get("TMP_DIR", "/root/tmp"),
+        help="Temporary directory for intermediate parquet outputs (verl backend).",
+    )
+    parser.add_argument(
+        "--prompt_key",
+        type=str,
+        default="prompt",
+        help="Parquet column name containing chat prompts (verl backend).",
+    )
+    parser.add_argument(
+        "--nnodes",
+        type=int,
+        default=int(os.environ.get("NNODES", "1")),
+        help="trainer.nnodes for verl generation (default: $NNODES or 1).",
+    )
+    parser.add_argument(
+        "--n_gpus_per_node",
+        type=int,
+        default=int(os.environ.get("NUM_ACCELERATORS", os.environ.get("N_GPUS_PER_NODE", "1"))),
+        help="trainer.n_gpus_per_node for verl generation (default: $NUM_ACCELERATORS or 1).",
+    )
+    parser.add_argument(
+        "--prompt_length",
+        type=int,
+        default=1024,
+        help="rollout.prompt_length for verl generation (default: 1024).",
+    )
+    parser.add_argument(
+        "--response_length",
+        type=int,
+        default=8192,
+        help="rollout.response_length for verl generation (default: 8192).",
+    )
+    parser.add_argument(
+        "--pipeline_model_parallel_size",
+        type=int,
+        default=1,
+        help="+rollout.pipeline_model_parallel_size for verl generation (default: 1).",
+    )
+    parser.add_argument(
+        "--actor_rollout_mode",
+        type=str,
+        default="async",
+        choices=["async", "sync"],
+        help="+actor_rollout_ref.rollout.mode for verl generation (default: async).",
+    )
+    parser.add_argument(
+        "--verl_batch_size",
+        type=int,
+        default=128,
+        help="data.batch_size for verl generation (default: 128).",
+    )
+    parser.add_argument(
+        "--judge_backend",
+        type=str,
+        default=None,
+        choices=["qwen_primus", "openai_compat"],
+        help=(
+            "Judge backend passed to recipe/GARO/scripts/evaluate/evaluation.py (verl backend). "
+            "If unset, evaluation.py will use its own defaults/env vars."
+        ),
+    )
+    parser.add_argument(
+        "--no_eval_details",
+        action="store_true",
+        help="Do not write per-sample correctness jsonl (verl backend).",
+    )
+
     args = parser.parse_args()
 
     _set_global_determinism(args.seed)
 
-    repo_root = Path(__file__).resolve().parents[1]
+    powers_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
+
+    datasets = resolve_datasets(args.datasets, args.data_root, powers_root)
+
+    # ---------------------
+    # verl backend
+    # ---------------------
+    if args.backend == "verl":
+        if not (project_root / "verl").exists():
+            raise RuntimeError(
+                "Backend 'verl' selected but 'verl/' package not found under project root. "
+                "Run from the repo root or use --backend vllm/hf."
+            )
+
+        # verl expects parquet input (as in eval_all.sh)
+        non_parquet = [ds for ds in datasets if ds.path.suffix.lower() != ".parquet"]
+        if non_parquet:
+            bad = ", ".join(f"{ds.name}={ds.path}" for ds in non_parquet)
+            raise ValueError(
+                "verl backend only supports parquet inputs (same as eval_all.sh). "
+                f"Got non-parquet dataset(s): {bad}"
+            )
+
+        out_parent = Path(args.output_dir)
+        out_dir = out_parent if out_parent.name == "GARO" else (out_parent / "GARO")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        tmp_dir = Path(args.tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        run_tag = (args.run_tag or "").strip()
+        if not run_tag:
+            if (args.model or "").strip() and (args.step or "").strip():
+                run_tag = f"{args.model.strip()}_{args.step.strip()}"
+            elif (args.model or "").strip():
+                run_tag = args.model.strip()
+            else:
+                run_tag = _default_run_tag(args.ckpt)
+        run_tag = _sanitize_tag(run_tag)
+
+        data_paths = [ds.path for ds in datasets]
+        tmp_paths = [tmp_dir / f"{ds.name}_{run_tag}.parquet" for ds in datasets]
+
+        eval_paths = [out_dir / f"{ds.name}_{run_tag}.eval.json" for ds in datasets]
+        eval_jsonl_paths = [
+            (out_dir / f"{ds.name}_{run_tag}.eval.details.jsonl") for ds in datasets
+        ]
+
+        print(
+            f"[INFO] Backend=verl | run_tag={run_tag} | out_dir={out_dir} | tmp_dir={tmp_dir}"
+        )
+        print(f"[INFO] Checkpoint path: {args.ckpt}")
+        print(f"[INFO] Data path(s): {' '.join(map(str, data_paths))}")
+
+        _run_verl_generation_multi(
+            project_root=project_root,
+            ckpt=args.ckpt,
+            data_paths=data_paths,
+            output_paths=tmp_paths,
+            nnodes=int(args.nnodes),
+            n_gpus_per_node=int(args.n_gpus_per_node),
+            n_samples=int(args.k),
+            temperature=float(args.temperature),
+            top_p=float(args.top_p),
+            prompt_key=str(args.prompt_key),
+            prompt_length=int(args.prompt_length),
+            response_length=int(args.response_length),
+            trust_remote_code=bool(args.trust_remote_code),
+            tensor_model_parallel_size=int(args.tensor_parallel_size),
+            pipeline_model_parallel_size=int(args.pipeline_model_parallel_size),
+            actor_rollout_mode=str(args.actor_rollout_mode),
+            verl_batch_size=int(args.verl_batch_size),
+        )
+
+        summary: Dict[str, Any] = {
+            "timestamp": _now_iso(),
+            "ckpt": args.ckpt,
+            "backend": "verl",
+            "run_tag": run_tag,
+            "generation": {
+                "k": int(args.k),
+                "temperature": float(args.temperature),
+                "top_p": float(args.top_p),
+                "prompt_length": int(args.prompt_length),
+                "response_length": int(args.response_length),
+                "nnodes": int(args.nnodes),
+                "n_gpus_per_node": int(args.n_gpus_per_node),
+                "tensor_model_parallel_size": int(args.tensor_parallel_size),
+                "pipeline_model_parallel_size": int(args.pipeline_model_parallel_size),
+                "actor_rollout_mode": str(args.actor_rollout_mode),
+                "batch_size": int(args.verl_batch_size),
+            },
+            "datasets": {},
+        }
+
+        # Copy parquet into output dir (mirrors eval_all.sh's rclone copy) + evaluate
+        for ds, tmp_p, eval_p, eval_j in zip(datasets, tmp_paths, eval_paths, eval_jsonl_paths):
+            if not tmp_p.exists():
+                raise FileNotFoundError(f"verl output parquet not found: {tmp_p}")
+
+            out_parquet = out_dir / tmp_p.name
+            shutil.copy2(tmp_p, out_parquet)
+
+            _run_recipe_evaluation(
+                project_root=project_root,
+                file_path=tmp_p,
+                k=int(args.k),
+                output_json=eval_p,
+                output_jsonl=None if bool(args.no_eval_details) else eval_j,
+                judge_backend=args.judge_backend,
+            )
+
+            metrics: Dict[str, Any] = {}
+            if eval_p.exists():
+                try:
+                    metrics = json.loads(eval_p.read_text(encoding="utf-8"))
+                except Exception:
+                    metrics = {}
+
+            summary["datasets"][ds.name] = {
+                "data_path": str(ds.path),
+                "tmp_parquet": str(tmp_p),
+                "parquet": str(out_parquet),
+                "eval_json": str(eval_p),
+                "eval_details_jsonl": None if bool(args.no_eval_details) else str(eval_j),
+                "metrics": metrics,
+            }
+
+            # Best-effort friendly one-liner
+            passk = None
+            try:
+                passk = float(metrics.get("pass_at_k", {}).get("accuracy"))
+            except Exception:
+                passk = None
+            if passk is not None:
+                print(
+                    f"[INFO] {ds.name}: pass@{int(args.k)}={passk:.4f} -> {eval_p}"
+                )
+            else:
+                print(f"[INFO] {ds.name}: evaluated -> {eval_p}")
+
+        _json_dump(summary, out_dir / "passk_summary.json")
+        print(f"[INFO] Wrote summary: {out_dir / 'passk_summary.json'}")
+        return
+
+    # ---------------------
+    # legacy backends
+    # ---------------------
+
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    datasets = resolve_datasets(args.datasets, args.data_root, repo_root)
 
     gen_cfg = GenConfig(
         k=int(args.k),
