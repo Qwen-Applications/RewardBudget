@@ -39,7 +39,7 @@ def example_map_fn(example, idx, process_fn, data_source, ability, split):
 def build_aime2024_dataset():
     def process_aime2024(example):
         question, ground_truth = example["Problem"], str(example["Answer"])
-        prompt = question.strip() + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}."
+        prompt = question.strip() + "\n\n" + "Please put your final answer within \\boxed{}."
         return question, prompt, ground_truth
 
     data_source = "Maxwell-Jia/AIME_2024"
@@ -53,7 +53,7 @@ def build_aime2024_dataset():
 def build_aime2025_dataset():
     def process_aime2025(example):
         question, ground_truth = example["problem"], str(example["solution"])
-        prompt = question.strip() + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}."
+        prompt = question.strip() + "\n\n" + "Please put your final answer within \\boxed{}."
         return question, prompt, ground_truth
 
     data_source = "yentinglin/aime_2025"
@@ -70,7 +70,7 @@ def build_gpqa_diamond_dataset():
     GPQA_QUERY_TEMPLATE = (
         "{Question}\n"
         "A. {A}\nB. {B}\nC. {C}\nD. {D}\n\n"
-        "Please reason step by step, and put your final answer (only the choice letter) within \\boxed{{}}."
+        "Please put your final answer (only the choice letter) within \\boxed{{}}."
     )
 
     def process_gpqa_diamond(example):
@@ -107,7 +107,7 @@ def build_gpqa_diamond_dataset():
 def build_dapo_train_dataset():
     def process_dapo(example):
         question, ground_truth = example["prompt"], example["solution"]
-        prompt = question.strip() + "\n\n" + "Please reason step by step, and put your final answer within \\boxed{}."
+        prompt = question.strip() + "\n\n" + "Please put your final answer within \\boxed{}."
         return question, prompt, ground_truth
 
     data_source = "open-r1/DAPO-Math-17k-Processed"

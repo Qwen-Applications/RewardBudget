@@ -66,7 +66,7 @@ FAPO_GENRM_TEMPLATE = (
     "Your task is to review and critique the solution step by step. "
     "Once you identify an error in a step, return the index of the step where the earliest error occurs. "
     "Otherwise, return the index of -1 (which typically denotes 'not found').\n\n"
-    "Please reason step by step, put your final answer (i.e., the index) in \\boxed{{}}."
+    "Please put your final answer (i.e., the index) in \\boxed{{}}."
 )
 GRM_SAMPLING_PARAMS = {
     "max_new_tokens": 16384,
