@@ -10,7 +10,7 @@ This script is designed for "bring-your-own-checkpoint" evaluation:
   - k: number of generations per prompt (pass@k)
 
 It writes (legacy backends: vllm/hf):
-  1) <output_dir>/<dataset>.generations.jsonl  (all generations + grading)
+  1) <output_dir>/<dataset>_powers.generations.jsonl  (all generations + grading)
   2) <output_dir>/passk_summary.json           (pass@k per dataset)
 
 It writes (verl backend, matching recipe/GARO/scripts/evaluate/eval_all.sh):
@@ -577,8 +577,9 @@ def run_dataset(
     batch_size: int,
     write_prompt_text: bool,
 ) -> Dict[str, Any]:
-    out_jsonl = out_dir / f"{ds.name}.generations.jsonl"
-    tmp_jsonl = out_dir / f"{ds.name}.generations.jsonl.tmp"
+    ds_tag = f"{ds.name}_powers"
+    out_jsonl = out_dir / f"{ds_tag}.generations.jsonl"
+    tmp_jsonl = out_dir / f"{ds_tag}.generations.jsonl.tmp"
 
     total = 0
     passk_hits = 0
@@ -614,7 +615,7 @@ def run_dataset(
                 gen_infos.append({"text": g, "answer": ans, "correct": correct})
 
             rec: Dict[str, Any] = {
-                "dataset": ds.name,
+                "dataset": ds_tag,
                 "idx": total,
                 "id": ex.get("id"),
                 "ground_truth": gt,
@@ -651,7 +652,7 @@ def run_dataset(
     passk = passk_hits / denom
 
     metrics = {
-        "dataset": ds.name,
+        "dataset": ds_tag,
         "path": str(ds.path),
         "num_examples": total,
         "k": cfg.k,
@@ -660,7 +661,7 @@ def run_dataset(
     }
 
     # Per-dataset metrics file (handy for shell pipelines).
-    _json_dump(metrics, out_dir / f"{ds.name}.metrics.json")
+    _json_dump(metrics, out_dir / f"{ds_tag}.metrics.json")
     return metrics
 
 
@@ -672,13 +673,13 @@ def main() -> None:
     parser.add_argument(
         "--datasets",
         type=str,
-        required=True,
+        default="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp",
         help="Comma-separated dataset names (or file paths)",
     )
     parser.add_argument(
         "--data_root",
         type=str,
-        default=os.environ.get("DATA_DIR") or os.environ.get("GARO_DATA_DIR"),
+        default=os.environ.get("DATA_DIR"),
         help=(
             "Root directory for GARO-style datasets (expects GARO/test_data/<name>.parquet). "
             "Defaults to $DATA_DIR or $GARO_DATA_DIR if set."
@@ -688,7 +689,7 @@ def main() -> None:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="outputs/inference",
+        ddefault=os.path.expandvars("${OUTPUT_DIR}/GARO/"),
         help=(
             "Output directory (parent). For verl backend, outputs are written under <output_dir>/GARO. "
             "For legacy backends, jsonl + summary are written directly under <output_dir>."
@@ -713,7 +714,7 @@ def main() -> None:
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=2048,
+        default=8192,
         help="Max new tokens per generation",
     )
     parser.add_argument(
@@ -789,7 +790,7 @@ def main() -> None:
     parser.add_argument(
         "--tmp_dir",
         type=str,
-        default=os.environ.get("TMP_DIR", "/root/tmp"),
+        default="/root/tmp",
         help="Temporary directory for intermediate parquet outputs (verl backend).",
     )
     parser.add_argument(
@@ -801,13 +802,13 @@ def main() -> None:
     parser.add_argument(
         "--nnodes",
         type=int,
-        default=int(os.environ.get("NNODES", "1")),
+        default=1,
         help="trainer.nnodes for verl generation (default: $NNODES or 1).",
     )
     parser.add_argument(
         "--n_gpus_per_node",
         type=int,
-        default=int(os.environ.get("NUM_ACCELERATORS", os.environ.get("N_GPUS_PER_NODE", "1"))),
+        default=1,
         help="trainer.n_gpus_per_node for verl generation (default: $NUM_ACCELERATORS or 1).",
     )
     parser.add_argument(
@@ -844,7 +845,7 @@ def main() -> None:
     parser.add_argument(
         "--judge_backend",
         type=str,
-        default=None,
+        default='qwen_primus',
         choices=["qwen_primus", "openai_compat"],
         help=(
             "Judge backend passed to recipe/GARO/scripts/evaluate/evaluation.py (verl backend). "
@@ -1067,6 +1068,7 @@ def main() -> None:
     }
 
     for ds in datasets:
+        ds_tag = f"{ds.name}_powers"
         print(f"[INFO] Dataset={ds.name} path={ds.path}")
         metrics = run_dataset(
             ds=ds,
@@ -1077,9 +1079,9 @@ def main() -> None:
             batch_size=int(args.batch_size),
             write_prompt_text=bool(args.write_prompt_text),
         )
-        summary["datasets"][ds.name] = metrics
+        summary["datasets"][ds_tag] = metrics
         print(
-            f"[INFO] {ds.name}: pass@{gen_cfg.k}={metrics['pass@k']:.4f} "
+            f"[INFO] {ds_tag}: pass@{gen_cfg.k}={metrics['pass@k']:.4f} "
             f"(n={metrics['num_examples']}) -> {metrics['output_jsonl']}"
         )
 
