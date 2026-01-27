@@ -406,6 +406,22 @@ def resolve_datasets(
             specs.append(DatasetSpec(name=p.stem, path=p))
             continue
 
+        # Prefer GARO-style layout if data_root is provided (common in prod eval).
+        tried: List[Path] = []
+        if data_root is not None:
+            cand_dir = Path(data_root) / "GARO" / "test_data"
+            cands = [
+                cand_dir / f"{name}.parquet",
+                cand_dir / f"{name}.jsonl",
+                cand_dir / f"{name}.json",
+            ]
+            tried.extend(cands)
+            found = next((c for c in cands if c.exists()), None)
+            if found is not None:
+                specs.append(DatasetSpec(name=name, path=found))
+                continue
+
+        # Fall back to built-ins (repo-provided MATH500.json).
         if name in builtins and builtins[name].exists():
             specs.append(DatasetSpec(name=name.lower(), path=builtins[name]))
             continue
@@ -416,18 +432,9 @@ def resolve_datasets(
                 f"Cannot resolve dataset '{name}'. Provide --data_root, or pass a file path."
             )
 
-        cand_dir = Path(data_root) / "GARO" / "test_data"
-        cands = [
-            cand_dir / f"{name}.parquet",
-            cand_dir / f"{name}.jsonl",
-            cand_dir / f"{name}.json",
-        ]
-        found = next((c for c in cands if c.exists()), None)
-        if found is None:
-            raise FileNotFoundError(
-                f"Cannot find dataset file for '{name}'. Tried: {', '.join(map(str, cands))}"
-            )
-        specs.append(DatasetSpec(name=name, path=found))
+        raise FileNotFoundError(
+            f"Cannot find dataset file for '{name}'. Tried: {', '.join(map(str, tried))}"
+        )
 
     return specs
 
