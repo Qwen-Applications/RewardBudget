@@ -40,10 +40,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import (Any, Dict, Iterable, Iterator, List, Optional, Sequence,
+                    Tuple, Union)
 
 import numpy as np
-
 
 # -----------------------------
 # Optional deps
@@ -81,7 +81,6 @@ except Exception:  # pragma: no cover
 from grader_utils.math_grader import grade_answer
 from grader_utils.parse_utils import parse_answer
 
-
 # -----------------------------
 # Utils
 # -----------------------------
@@ -118,16 +117,26 @@ def _set_global_determinism(seed: int) -> None:
 def _default_ckpts_from_env() -> List[str]:
     """
     Default to the same two model IDs commonly used in eval scripts:
-      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B
-      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct
+      ${PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR} with format "qwen:path1;llama:path2"
     """
-    base = os.environ.get("PRIMUS_SOURCE_CHECKPOINT_DIR")
-    if not base:
+    multi_base = os.environ.get("PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR")
+    if not multi_base:
         return []
-    return [
-        str(Path(base) / "Qwen3-8B"),
-        str(Path(base) / "Llama-3.2-3B-Instruct"),
-    ]
+    
+    ckpt_paths = []
+    # Parse format: "qwen:path1;llama:path2"
+    model_entries = multi_base.split(";")
+    for entry in model_entries:
+        if ":" in entry:
+            model, path = entry.split(":", 1)
+            base = path.strip()
+            model = "Qwen3-8B" if model.lower() == "qwen" else "Llama-3.2-3B-Instruct"
+            ckpt_paths.append(str(Path(base, model)))
+        else:
+            # If no colon, treat entire entry as path
+            ckpt_paths.append(entry.strip())
+    
+    return ckpt_paths
 
 
 def _split_csv(x: Optional[str]) -> List[str]:
