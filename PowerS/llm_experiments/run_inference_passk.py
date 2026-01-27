@@ -728,7 +728,7 @@ def main() -> None:
     parser.add_argument(
         "--data_root",
         type=str,
-        default=os.environ.get("DATA_DIR"),
+        default="/primus_datasets/zmy",
         help=(
             "Root directory for GARO-style datasets (expects GARO/test_data/<name>.parquet). "
             "Defaults to $DATA_DIR or $GARO_DATA_DIR if set."
