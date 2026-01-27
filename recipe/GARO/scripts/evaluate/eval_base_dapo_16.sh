@@ -49,7 +49,7 @@ for t in "${TASKS[@]}"; do
 done
 
 # HF 模型直接给 model id 或本地路径
-MODEL_ID="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct"
+MODEL_ID="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B"
 CHECKPOINT_PATH="${MODEL_ID}"
 
 # Create output directory if it doesn't exist
