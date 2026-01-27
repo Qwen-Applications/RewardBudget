@@ -1,13 +1,16 @@
 # llm_handler.py
 import json
+import os
+import random
 import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 import sseclient
+from requests.exceptions import ChunkedEncodingError, ConnectionError, RequestException, Timeout
 
 
 class LLMHandler:
@@ -17,9 +20,20 @@ class LLMHandler:
         coder_model_name: str = "qwen3-235b-instruct-2507-trans", # "qwen3-235b-instruct-trans-128k"
     ):
         # 初始化自定义平台的API信息
-        self.text_model_url = "http://shenma-ai-pub.alibaba-inc.com/v1/completions"
-        self.vlm_model_url = "http://shenma-ai-pub.alibaba-inc.com/v1/completions"
-        self.api_key = "REDACTED_QWEN_API_KEY"  # 根据实际API密钥进行修改
+        # 允许用环境变量覆盖，便于在不同集群/网关环境下切换。
+        self.text_model_url = os.environ.get(
+            "QWEN_TEXT_MODEL_URL",
+            "http://shenma-ai-pub.alibaba-inc.com/v1/completions",
+        )
+        self.vlm_model_url = os.environ.get(
+            "QWEN_VLM_MODEL_URL",
+            "http://shenma-ai-pub.alibaba-inc.com/v1/completions",
+        )
+        self.api_key = os.environ.get("QWEN_API_KEY", "REDACTED_QWEN_API_KEY")
+
+        # API 稳定性参数（可通过环境变量调节）
+        self.max_retries = int(os.environ.get("QWEN_API_MAX_RETRIES", "4"))
+        self.retry_backoff_s = float(os.environ.get("QWEN_API_RETRY_BACKOFF_S", "0.5"))
 
         # 设置模型名称
         self.text_model_name = text_model_name
@@ -34,14 +48,41 @@ class LLMHandler:
         if getattr(self, "verbose", False):
             print(*args, **kwargs)
 
+    def _is_retryable_http_status(self, code: int) -> bool:
+        # 404 在某些网关/灰度环境下可能是临时路由失败；这里把它视作可重试。
+        return code in {404, 408, 409, 425, 429, 500, 502, 503, 504}
+
+    def _sleep_backoff(self, attempt: int) -> None:
+        base = float(getattr(self, "retry_backoff_s", 0.5))
+        # 指数退避 + 抖动，避免雪崩重试
+        time.sleep(base * (2 ** attempt) + random.random() * base)
+
+    def _preview_response_text(self, resp: requests.Response, limit: int = 800) -> str:
+        """Best-effort preview of response body without assuming it is fully buffered."""
+        try:
+            buf = bytearray()
+            for chunk in resp.iter_content(chunk_size=256):
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                if len(buf) >= limit:
+                    break
+            return bytes(buf[:limit]).decode("utf-8", errors="replace")
+        except Exception:
+            try:
+                return (resp.text or "")[:limit]
+            except Exception:
+                return ""
+
+
     def call_qwen3(self, messages: List[Dict[str, str]], stream: bool = True, model_name=None) -> Any:
         """
         调用Qwen3-max模型
-        
+
         Args:
             messages: 对话消息列表
             stream: 是否流式输出
-            
+
         Returns:
             模型响应
         """
@@ -52,32 +93,81 @@ class LLMHandler:
 
         headers = {
             "Accept": "text/event-stream",
+            "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        # Add rich error context, but keep stdout quiet unless verbose.
-        try:
-            response = requests.post(self.text_model_url, json=request_data, headers=headers, stream=stream, timeout=getattr(self, "timeout", None))
-        except Exception as e:
-            raise RuntimeError(
-                f"qwen_primus request failed: {type(e).__name__}: {e}; url={self.text_model_url}; model={model_name}; request_id={request_data.get('request_id')}"
-            )
+        # NOTE:
+        # - 该后端返回的是 text/event-stream (SSE)。
+        # - 即使调用方 stream=False，我们也必须用 stream=True 发起请求，才能稳定消费 SSE chunk。
+        timeout = getattr(self, "timeout", None)
+        max_retries = int(getattr(self, "max_retries", 4))
 
-        if not response.ok:
-            body_preview = (response.text or "")[:800]
-            raise RuntimeError(
-                f"qwen_primus HTTP {response.status_code}; url={self.text_model_url}; model={model_name}; request_id={request_data.get('request_id')}; body[:800]={body_preview!r}"
-            )
+        last_err: Optional[BaseException] = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    self.text_model_url,
+                    json=request_data,
+                    headers=headers,
+                    stream=True,
+                    timeout=timeout,
+                )
+            except (ChunkedEncodingError, ConnectionError, Timeout, RequestException) as e:
+                last_err = e
+            else:
+                if not response.ok:
+                    body_preview = self._preview_response_text(response, 800)
+                    err = RuntimeError(
+                        f"qwen_primus HTTP {response.status_code}; "
+                        f"url={self.text_model_url}; model={model_name}; "
+                        f"request_id={request_data.get('request_id')}; "
+                        f"body[:800]={body_preview!r}"
+                    )
+                    # 某些网关/灰度下 404/5xx 可能是暂态；允许重试。
+                    if self._is_retryable_http_status(response.status_code) and attempt < max_retries - 1:
+                        last_err = err
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+                        self._sleep_backoff(attempt)
+                        continue
+                    raise err
 
-        client = sseclient.SSEClient(response)
- 
-        if stream:
-            return self._adapt_sse_to_openai_stream(client)
-        else:
-            for event in client.events():
-                if event.event == 'complete':
-                    raw = json.loads(event.data)
-                    return raw["choices"][0]["message"]["content"]
+                client = sseclient.SSEClient(response)
+
+                if stream:
+                    # 流式：返回 generator，由调用方消费；不要提前关闭 response。
+                    return self._adapt_sse_to_openai_stream(client)
+
+                # 非流式：消费到 complete 事件后返回最终文本。
+                try:
+                    for event in client.events():
+                        if event.event == "complete":
+                            raw = json.loads(event.data)
+                            return raw["choices"][0]["message"]["content"]
+                    last_err = RuntimeError("qwen_primus SSE stream ended without 'complete' event")
+                except (ChunkedEncodingError, ConnectionError, Timeout, RequestException, json.JSONDecodeError, ValueError) as e:
+                    last_err = e
+                finally:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+
+            if attempt < max_retries - 1:
+                self._log("qwen_primus retrying after error:", repr(last_err))
+                self._sleep_backoff(attempt)
+                continue
+            break
+
+        raise RuntimeError(
+            f"qwen_primus request failed after {max_retries} attempts; "
+            f"url={self.text_model_url}; model={model_name}; "
+            f"request_id={request_data.get('request_id')}; "
+            f"last_err={type(last_err).__name__ if last_err else None}: {last_err}"
+        )
 
     def _adapt_sse_to_openai_stream(self, sse_client):
         """

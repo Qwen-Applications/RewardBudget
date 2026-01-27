@@ -280,6 +280,7 @@ def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: Ju
     返回 1.0/0.0
     """
     pred_answer = extract_solution_inside_boxed(solution_str)
+    if not pred_answer: return 0.0
     prompt = build_judge_prompt(question, ground_truth, pred_answer)
 
     ck = _cache_key(question, ground_truth, pred_answer)
