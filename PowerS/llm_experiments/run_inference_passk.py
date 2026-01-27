@@ -115,6 +115,31 @@ def _set_global_determinism(seed: int) -> None:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+def _default_ckpts_from_env() -> List[str]:
+    """
+    Default to the same two model IDs commonly used in eval scripts:
+      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B
+      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct
+    """
+    base = os.environ.get("PRIMUS_SOURCE_CHECKPOINT_DIR")
+    if not base:
+        return []
+    return [
+        str(Path(base) / "Qwen3-8B"),
+        str(Path(base) / "Llama-3.2-3B-Instruct"),
+    ]
+
+
+def _split_csv(x: Optional[str]) -> List[str]:
+    if not x:
+        return []
+    return [s.strip() for s in x.split(",") if s.strip()]
+
+
+def _sanitize_tag(x: str) -> str:
+    # Keep it filesystem-friendly.
+    return "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in x)
+
 
 def _normalize_dataset_name(name: str) -> str:
     return name.strip()
@@ -669,7 +694,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run deterministic inference and compute pass@k per dataset."
     )
-    parser.add_argument("--ckpt", type=str, required=True, help="Local HF ckpt/model path")
+    parser.add_argument(
+        "--ckpt",
+        type=str,
+        default=None,
+        help=(
+            "Local HF ckpt/model path. If omitted (and --ckpts is also omitted), "
+            "defaults to two models under $PRIMUS_SOURCE_CHECKPOINT_DIR: "
+            "Qwen3-8B and Llama-3.2-3B-Instruct."
+        ),
+    )
+    parser.add_argument(
+        "--ckpts",
+        type=str,
+        default=None,
+        help="Comma-separated list of local HF ckpt/model paths (overrides --ckpt).",
+    )
     parser.add_argument(
         "--datasets",
         type=str,
@@ -1012,8 +1052,8 @@ def main() -> None:
     # legacy backends
     # ---------------------
 
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_root = Path(args.output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
 
     gen_cfg = GenConfig(
         k=int(args.k),
@@ -1024,37 +1064,20 @@ def main() -> None:
         seed=int(args.seed),
     )
 
-    # NOTE: vLLM doesn't need tokenizer for chat-template rendering, but we use it
-    # to render list-of-messages prompts into a single string when possible.
-    tokenizer = None
-    if _HAS_TORCH:
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                args.ckpt, trust_remote_code=args.trust_remote_code
-            )
-        except Exception:
-            tokenizer = None
-
-    if args.backend == "vllm":
-        gen: Generator = VLLMGenerator(
-            ckpt=args.ckpt,
-            trust_remote_code=args.trust_remote_code,
-            tensor_parallel_size=int(args.tensor_parallel_size),
-            dtype=args.dtype,
-            max_model_len=args.max_model_len,
-        )
-    else:
-        gen = HFGenerator(
-            ckpt=args.ckpt,
-            trust_remote_code=args.trust_remote_code,
-            dtype=args.dtype,
-            device="cuda" if _HAS_TORCH and torch.cuda.is_available() else "cpu",
-            max_prompt_tokens=args.max_prompt_tokens,
+    # Resolve ckpt list:
+    #   --ckpts (CSV) > --ckpt (single) > env default list
+    ckpt_list = _split_csv(args.ckpts)
+    if not ckpt_list and args.ckpt:
+        ckpt_list = [args.ckpt]
+    if not ckpt_list:
+        ckpt_list = _default_ckpts_from_env()
+    if not ckpt_list:
+        raise ValueError(
+            "No checkpoint specified. Provide --ckpt/--ckpts or set $PRIMUS_SOURCE_CHECKPOINT_DIR."
         )
 
-    summary: Dict[str, Any] = {
+    multi_summary: Dict[str, Any] = {
         "timestamp": _now_iso(),
-        "ckpt": args.ckpt,
         "backend": args.backend,
         "sampling": {
             "k": gen_cfg.k,
@@ -1064,29 +1087,88 @@ def main() -> None:
             "max_new_tokens": gen_cfg.max_new_tokens,
             "seed": gen_cfg.seed,
         },
-        "datasets": {},
+        "models": {},
     }
 
-    for ds in datasets:
-        ds_tag = f"{ds.name}_powers"
-        print(f"[INFO] Dataset={ds.name} path={ds.path}")
-        metrics = run_dataset(
-            ds=ds,
-            gen=gen,
-            tokenizer=tokenizer,
-            cfg=gen_cfg,
-            out_dir=out_dir,
-            batch_size=int(args.batch_size),
-            write_prompt_text=bool(args.write_prompt_text),
-        )
-        summary["datasets"][ds_tag] = metrics
-        print(
-            f"[INFO] {ds_tag}: pass@{gen_cfg.k}={metrics['pass@k']:.4f} "
-            f"(n={metrics['num_examples']}) -> {metrics['output_jsonl']}"
-        )
+    for ckpt in ckpt_list:
+        ckpt = os.path.expandvars(ckpt)
+        model_tag = _sanitize_tag(Path(ckpt.rstrip("/")).name or "model")
+        out_dir = out_root / model_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-    _json_dump(summary, out_dir / "passk_summary.json")
-    print(f"[INFO] Wrote summary: {out_dir / 'passk_summary.json'}")
+        print(f"[INFO] Model={model_tag} ckpt={ckpt}")
+
+        # NOTE: vLLM doesn't need tokenizer for chat-template rendering, but we use it
+        # to render list-of-messages prompts into a single string when possible.
+        tokenizer = None
+        if _HAS_TORCH:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    ckpt, trust_remote_code=args.trust_remote_code
+                )
+            except Exception:
+                tokenizer = None
+
+        if args.backend == "vllm":
+            gen: Generator = VLLMGenerator(
+                ckpt=ckpt,
+                trust_remote_code=args.trust_remote_code,
+                tensor_parallel_size=int(args.tensor_parallel_size),
+                dtype=args.dtype,
+                max_model_len=args.max_model_len,
+            )
+        else:
+            gen = HFGenerator(
+                ckpt=ckpt,
+                trust_remote_code=args.trust_remote_code,
+                dtype=args.dtype,
+                device="cuda" if _HAS_TORCH and torch.cuda.is_available() else "cpu",
+                max_prompt_tokens=args.max_prompt_tokens,
+            )
+
+        summary: Dict[str, Any] = {
+            "timestamp": _now_iso(),
+            "ckpt": ckpt,
+            "model_tag": model_tag,
+            "backend": args.backend,
+            "sampling": {
+                "k": gen_cfg.k,
+                "temperature": gen_cfg.temperature,
+                "top_p": gen_cfg.top_p,
+                "top_k": gen_cfg.top_k,
+                "max_new_tokens": gen_cfg.max_new_tokens,
+                "seed": gen_cfg.seed,
+            },
+            "datasets": {},
+        }
+
+        for ds in datasets:
+            print(f"[INFO] Dataset={ds.name} path={ds.path}")
+            metrics = run_dataset(
+                ds=ds,
+                gen=gen,
+                tokenizer=tokenizer,
+                cfg=gen_cfg,
+                out_dir=out_dir,
+                batch_size=int(args.batch_size),
+                write_prompt_text=bool(args.write_prompt_text),
+            )
+            summary["datasets"][ds.name] = metrics
+            print(
+                f"[INFO] {model_tag} / {ds.name}: pass@{gen_cfg.k}={metrics['pass@k']:.4f} "
+                f"(n={metrics['num_examples']}) -> {metrics['output_jsonl']}"
+            )
+
+        _json_dump(summary, out_dir / "passk_summary.json")
+        print(f"[INFO] Wrote summary: {out_dir / 'passk_summary.json'}")
+        multi_summary["models"][model_tag] = {
+            "ckpt": ckpt,
+            "summary_path": str(out_dir / "passk_summary.json"),
+        }
+
+    if len(ckpt_list) > 1:
+        _json_dump(multi_summary, out_root / "passk_summary.multi_models.json")
+        print(f"[INFO] Wrote multi-model index: {out_root / 'passk_summary.multi_models.json'}")
 
 
 if __name__ == "__main__":
