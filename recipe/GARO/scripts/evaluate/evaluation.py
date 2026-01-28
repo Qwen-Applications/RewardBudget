@@ -1,14 +1,29 @@
-# recipe/GARO/eval_pass_k.py
 # -*- coding: utf-8 -*-
+"""
+GARO evaluation script (new, minimal, batch-judge via qwen_cluster style).
+
+Goal:
+  - Keep eval_all.sh / eval_all_16.sh calling working:
+      python3 recipe/GARO/scripts/evaluate/evaluation.py --file ... --k ... --output ... --output_jsonl ...
+  - Mainly support 4 args: file, k, output, output_jsonl
+  - For LOCAL_SOURCES: use recipe.GARO.reward.compute_score
+  - Otherwise: batch judge via vLLM OpenAI-completions-style endpoint (/v1/completions)
+      (same request pattern as evaluate/qwen_cluster.py __main__ + send_request)
+
+Judge prompt:
+  - We assemble plain prompt string (qwen_cluster expects you to build prompt yourself)
+  - Require output ONLY: \\boxed{correct} or \\boxed{incorrect}
+"""
 
 import argparse
+import hashlib
 import json
 import os
-import re
-import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Optional, Dict, Tuple
+from typing import Any, Dict, Iterator, List, Optional
 
+import requests
 import torch
 
 from recipe.GARO.reward import compute_score
@@ -27,33 +42,31 @@ LOCAL_SOURCES = {
     "aime25",
 }
 
+
 # =====================
-# 2) Utils
+# 2) DDP helpers
 # =====================
 def is_main_process() -> bool:
     """只在未初始化 DDP 或 rank0 时返回 True。"""
-    return (not torch.distributed.is_initialized()
-            or torch.distributed.get_rank() == 0)
+    return (not torch.distributed.is_initialized()) or torch.distributed.get_rank() == 0
 
 
-def local_mkdir(path: str) -> str:
+def local_mkdir(path: str) -> None:
     """只在 main process 创建目录，然后所有 rank 同步一下。"""
-    if path == "":
-        return path
-
+    if not path:
+        return
     if is_main_process():
         os.makedirs(path, exist_ok=True)
-
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
 
-    return path
 
-
-def _iter_records(file_path: str):
+# =====================
+# 3) Input iterators (compatible with evaluate.zip's evaluation.py)
+# =====================
+def _iter_records(file_path: str) -> Iterator[Dict[str, Any]]:
     ext = os.path.splitext(file_path)[1].lower()
 
-    # --- JSONL / JSON ---
     if ext in [".jsonl", ".json"]:
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -61,9 +74,9 @@ def _iter_records(file_path: str):
                 if not line:
                     continue
                 yield json.loads(line)
+        return
 
-    # --- Parquet ---
-    elif ext == ".parquet":
+    if ext == ".parquet":
         try:
             import pyarrow.parquet as pq  # type: ignore
         except ModuleNotFoundError as e:
@@ -74,32 +87,22 @@ def _iter_records(file_path: str):
         table = pq.read_table(file_path)
         cols = table.to_pydict()
         n = table.num_rows
-
         for i in range(n):
-            row = {k: v[i] for k, v in cols.items()}
-            yield row
-    else:
-        raise ValueError(f"Unsupported file extension for {file_path}")
+            yield {k: v[i] for k, v in cols.items()}
+        return
+
+    raise ValueError(f"Unsupported file extension for {file_path}")
 
 
 # =====================
-# 3) Boxed extractor (brace-matching, consistent with recipe.GARO.reward)
+# 4) Boxed extractor (brace-matching, consistent with recipe.GARO.reward)
 # =====================
-_BOXED_RE = re.compile(r"\\boxed\{")
-
-
 def extract_solution_inside_boxed(text: str) -> str:
-    """Extract the LAST \boxed{...} content.
-
-    This brace-matching version supports nested braces (robust for LaTeX).
-    Returns "" if no boxed is found.
-    """
+    """Extract the LAST \\boxed{...} content, supporting nested braces."""
     if not text:
         return ""
 
-    # The model outputs a single backslash in Python strings (i.e. "\\boxed{...")
-    # so we search for r"\boxed{".
-    key = r"\boxed{"  # one backslash in the *text*
+    key = r"\boxed{"
     i, n = 0, len(text)
     last: Optional[str] = None
 
@@ -122,69 +125,87 @@ def extract_solution_inside_boxed(text: str) -> str:
             i = j
         else:
             break
+
     return (last or "").strip()
 
 
+def _get_question_from_obj(obj: Dict[str, Any]) -> str:
+    """Support prompt being str or list[dict] with {content: ...}"""
+    p = obj.get("prompt", "")
+    if isinstance(p, list) and p and isinstance(p[0], dict):
+        return str(p[0].get("content", ""))
+    if isinstance(p, str):
+        return p
+    return ""
+
+
 # =====================
-# 4) API Judge
+# 5) Judge prompt / parse
 # =====================
 
+def apply_chat_template(messages: List[Dict[str, str]]) -> str:
+    """Apply Qwen3 Instruct chat template for /v1/completions.
 
-@dataclass
-class JudgeConfig:
-    """Judge backend configuration.
-
-    Supported backends:
-      - qwen_primus: use recipe/GARO/scripts/evaluate/qwen_primus.py (SSE)
-      - openai_compat: OpenAI-compatible /v1/chat/completions endpoint
+    Qwen3 Instruct models on Hugging Face use the ChatML-style special tokens:
+      <|im_start|>{role}\n{content}<|im_end|>\n
+    and for generation you append:
+      <|im_start|>assistant\n
+    This mirrors the tokenizer_config.json `chat_template` used by Qwen3-*-Instruct-2507.
     """
+    parts: List[str] = []
 
-    backend: str = "qwen_primus"
+    # Pull out an explicit system message if the first message is system.
+    start_idx = 0
+    if messages and (messages[0].get("role") or "").strip().lower() == "system":
+        sys_content = messages[0].get("content") or ""
+        parts.append(f"<|im_start|>system\n{sys_content}<|im_end|>\n")
+        start_idx = 1
 
-    # --- openai_compat ---
-    api_base: str = ""
-    api_key: str = ""
-    model: str = "gpt-4o-mini"
-    timeout: int = 60
-    temperature: float = 0.0
+    for m in messages[start_idx:]:
+        role = (m.get("role") or "user").strip().lower()
+        content = m.get("content") or ""
+        if role not in ("user", "assistant", "system"):
+            role = "user"
+        parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
 
-    # --- qwen_primus ---
-    qwen_api_key: str = ""
-    qwen_text_model_url: str = ""
-    qwen_model_name: str = "qwen3-235b-instruct-trans-sg"
-    qwen_verbose: bool = False
+    # add_generation_prompt
+    parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
 
 
 def build_judge_prompt(question: str, ground_truth: str, pred_answer: str) -> str:
-    return f"""Judge if the model final answer matches the ground truth for the given problem.
-
-Be strict on meaning, not format: ignore LaTeX/whitespace/notation; accept mathematically equivalent forms.
-Respect required domain/units/exactness; allow small rounding error.
-
-Reply ONLY with \\boxed{{correct}} or \\boxed{{incorrect}}.
-
-Problem: {question}
-Ground truth: {ground_truth}
-Model answer: {pred_answer}
-"""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Judge if the Predicted Answer matches the Ground Truth for the Given Problem.\n\n"
+                "Be strict on meaning, not format: ignore LaTeX/whitespace/notation; accept mathematically equivalent forms.\n"
+                "Respect required domain/units/exactness; allow small rounding error.\n\n"
+                "Reply ONLY with \\boxed{correct} or \\boxed{incorrect}."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Given Problem: {question}\n"
+                f"Ground Truth: {ground_truth}\n"
+                f"Predicted Answer: {pred_answer}\n"
+            ),
+        },
+    ]
+    return apply_chat_template(messages)
 
 
 def parse_judge_boxed(output_text: str) -> Optional[bool]:
-    """
-    解析 judge 模型输出：
-    - \boxed{correct} -> True
-    - \boxed{incorrect} -> False
-    解析失败返回 None
-    """
+    """Return True/False, or None if cannot parse."""
     if not output_text:
         return None
-    # Extract last boxed content if present
     boxed = extract_solution_inside_boxed(output_text)
     if not boxed:
-        lowered = output_text.strip().lower()
-        if lowered == "correct":
+        t = output_text.strip().lower()
+        if t == "correct":
             return True
-        if lowered == "incorrect":
+        if t == "incorrect":
             return False
         return None
     tag = boxed.strip().lower()
@@ -195,73 +216,114 @@ def parse_judge_boxed(output_text: str) -> Optional[bool]:
     return None
 
 
-_QWEN_HANDLER_CACHE: Dict[Tuple[str, str, str, bool], Any] = {}
+def _trunc(s: str, n: int = 400) -> str:
+    s = "" if s is None else str(s)
+    s = s.replace("\n", "\\n")
+    return s if len(s) <= n else (s[:n] + f"...(+{len(s)-n} chars)")
 
 
-def _get_qwen_handler(cfg: JudgeConfig):
-    from recipe.GARO.scripts.evaluate.qwen_primus import LLMHandler
-
-    api_key = cfg.qwen_api_key or os.getenv("QWEN_API_KEY", "")
-    url = cfg.qwen_text_model_url or os.getenv("QWEN_TEXT_MODEL_URL", "")
-    model_name = cfg.qwen_model_name or os.getenv("QWEN_MODEL_NAME", "qwen3-235b-instruct-trans-sg")
-    verbose = bool(cfg.qwen_verbose)
-
-    cache_key = (api_key, url, model_name, verbose)
-    if cache_key not in _QWEN_HANDLER_CACHE:
-        handler = LLMHandler(text_model_name=model_name)
-
-        if api_key:
-            handler.api_key = api_key
-        if url:
-            handler.text_model_url = url
-            if hasattr(handler, "vlm_model_url"):
-                handler.vlm_model_url = url
-
-        setattr(handler, "verbose", verbose)
-        setattr(handler, "timeout", cfg.timeout)
-
-        _QWEN_HANDLER_CACHE[cache_key] = handler
-    return _QWEN_HANDLER_CACHE[cache_key]
+# =====================
+# 6) qwen_cluster-style batch calling (NO dependency on more_itertools/tqdm)
+#     Mirrors evaluate/qwen_cluster.py send_request payload format.
+# =====================
+@dataclass
+class JudgeRuntime:
+    ip: str
+    port: str
+    url_tmpl: str
+    max_workers: int
+    partition_size: int
+    max_tokens: int
+    timeout_seconds: int
 
 
-def call_judge_api(prompt: str, cfg: JudgeConfig) -> str:
-    """Call judge model with the configured backend."""
+def _get_judge_runtime(
+    ip: str,
+    port: str,
+    url_tmpl: str,
+    max_workers: int,
+    partition_size: int,
+    max_tokens: int,
+    timeout_seconds: int,
+) -> JudgeRuntime:
+    return JudgeRuntime(
+        ip=ip,
+        port=port,
+        url_tmpl=url_tmpl,
+        max_workers=max_workers,
+        partition_size=partition_size,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+    )
 
-    if cfg.backend == "qwen_primus":
-        handler = _get_qwen_handler(cfg)
-        messages = [
-            {"role": "system", "content": "You are a precise grading assistant."},
-            {"role": "user", "content": prompt},
-        ]
-        # qwen_primus returns a plain string in non-stream mode
-        return handler.call_qwen3(messages, stream=False, model_name=cfg.qwen_model_name)
 
-    if cfg.backend == "openai_compat":
-        import requests
+def _resolve_url(rt: JudgeRuntime) -> str:
+    url = rt.url_tmpl.replace("localhost", str(rt.ip)).replace("port", str(rt.port))
+    return url
 
-        url = cfg.api_base.rstrip("/") + "/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {cfg.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": cfg.model,
-            "temperature": cfg.temperature,
-            "messages": [
-                {"role": "system", "content": "You are a precise grading assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        }
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout)
+def _send_request(prompt: str, rt: JudgeRuntime, param_gen: Dict[str, Any]) -> str:
+    """
+    Exactly like evaluate/qwen_cluster.py: POST {url} with json {"prompt": prompt, **param_gen}
+    and read result['choices'][-1]['text'].
+    """
+    url = _resolve_url(rt)
+    payload = {"prompt": prompt, **param_gen}
+    try:
+        resp = requests.post(url, json=payload, timeout=rt.timeout_seconds)
         resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        result = resp.json()
+        return result["choices"][-1]["text"]
+    except Exception as e:
+        # keep behavior similar: print and return empty
+        print(f"[JUDGE_HTTP_ERROR] {repr(e)} url={url}")
+        return ""
 
-    raise ValueError(f"Unknown judge backend: {cfg.backend}")
+
+def _chunked_indices(n: int, chunk_size: int) -> Iterator[range]:
+    for start in range(0, n, chunk_size):
+        yield range(start, min(n, start + chunk_size))
 
 
+def call_judge_api_batch(prompts: List[str], rt: JudgeRuntime) -> List[str]:
+    """Batch call with concurrency; preserves input order."""
+    if not prompts:
+        return []
+
+    # param_gen matches qwen_cluster main style
+    param_gen = {
+        "max_tokens": rt.max_tokens,
+        # keep deterministic for judge
+        "temperature": 0.0,
+    }
+
+    outs: List[Optional[str]] = [None] * len(prompts)
+
+    # Avoid multi-rank double billing
+    if torch.distributed.is_initialized() and not is_main_process():
+        return [""] * len(prompts)
+
+    with ThreadPoolExecutor(max_workers=rt.max_workers) as ex:
+        for idx_range in _chunked_indices(len(prompts), rt.partition_size):
+            future_to_idx = {
+                ex.submit(_send_request, prompts[i], rt, param_gen): i for i in idx_range
+            }
+            for fut in as_completed(future_to_idx):
+                i = future_to_idx[fut]
+                try:
+                    outs[i] = fut.result()
+                except Exception as e:
+                    print(f"[JUDGE_FUTURE_ERROR] {repr(e)} idx={i}")
+                    outs[i] = ""
+
+    return [x or "" for x in outs]
+
+
+# =====================
+# 7) Verdict cache (question+gt+pred -> score)
+# =====================
 _JUDGE_VERDICT_CACHE: Dict[str, float] = {}
+_JUDGE_PARSEFAIL_KEYS: set[str] = set()
 
 
 def _cache_key(question: str, ground_truth: str, pred_answer: str) -> str:
@@ -274,120 +336,76 @@ def _cache_key(question: str, ground_truth: str, pred_answer: str) -> str:
     return h.hexdigest()
 
 
-def api_judge_score(question: str, ground_truth: str, solution_str: str, cfg: JudgeConfig) -> float:
+def judge_scores_for_answers(question: str, ground_truth: str, pred_answers: List[str], rt: JudgeRuntime) -> List[float]:
     """
-    使用 API judge 判断 correctness。
-    返回 1.0/0.0
+    pred_answers: list of extracted boxed answers ("" means empty)
+    returns: list[float] of 1.0/0.0
     """
-    pred_answer = extract_solution_inside_boxed(solution_str)
-    if not pred_answer: return 0.0
-    prompt = build_judge_prompt(question, ground_truth, pred_answer)
+    # build uncached prompts
+    uncached_idxs: List[int] = []
+    uncached_prompts: List[str] = []
 
-    ck = _cache_key(question, ground_truth, pred_answer)
-    if ck in _JUDGE_VERDICT_CACHE:
-        return _JUDGE_VERDICT_CACHE[ck]
+    for i, ans in enumerate(pred_answers):
+        if not ans:
+            continue
+        ck = _cache_key(question, ground_truth, ans)
+        if ck in _JUDGE_VERDICT_CACHE:
+            continue
+        uncached_idxs.append(i)
+        uncached_prompts.append(build_judge_prompt(question, ground_truth, ans))
 
-    # 重要：如果你真的在 DDP 环境跑评测，避免多 rank 重复扣费
-    if torch.distributed.is_initialized() and not is_main_process():
-        return 0.0
+    outs: List[str] = []
+    if uncached_prompts:
+        outs = call_judge_api_batch(uncached_prompts, rt)
 
-    def _trunc(s: str, n: int = 400) -> str:
-        s = "" if s is None else str(s)
-        s = s.replace("\n", "\\n")
-        return s if len(s) <= n else (s[:n] + f"...(+{len(s)-n} chars)")
-
-    try:
-        out = call_judge_api(prompt, cfg)
+    # update cache
+    for j, i in enumerate(uncached_idxs):
+        ans = pred_answers[i]
+        ck = _cache_key(question, ground_truth, ans)
+        out = outs[j] if j < len(outs) else ""
         verdict = parse_judge_boxed(out)
         if verdict is None:
-            # Only print errors (not successful verdicts) so that judge failures are visible.
             print(
                 "[JUDGE_ERROR] parse_failed "
-                f"backend={cfg.backend} model={cfg.qwen_model_name if cfg.backend=='qwen_primus' else cfg.model} "
                 f"cache_key={ck} "
                 f"question={_trunc(question)} "
                 f"gt={_trunc(ground_truth)} "
-                f"pred={_trunc(pred_answer)} "
+                f"pred={_trunc(ans)} "
                 f"judge_out={_trunc(out, 800)}"
             )
-            return 0.0
+            _JUDGE_VERDICT_CACHE[ck] = 0.0
+            _JUDGE_PARSEFAIL_KEYS.add(ck)
+        else:
+            _JUDGE_VERDICT_CACHE[ck] = 1.0 if verdict else 0.0
+            if ck in _JUDGE_PARSEFAIL_KEYS:
+                _JUDGE_PARSEFAIL_KEYS.remove(ck)
 
-        score = 1.0 if verdict else 0.0
-        _JUDGE_VERDICT_CACHE[ck] = score
-        return score
-    except Exception as e:
-        # Only print errors, but include concrete context for debugging.
-        print(
-            "[JUDGE_ERROR] api_call_failed "
-            f"backend={cfg.backend} model={cfg.qwen_model_name if cfg.backend=='qwen_primus' else cfg.model} "
-            f"cache_key={ck} "
-            f"err={type(e).__name__}: {e} "
-            f"question={_trunc(question)} "
-            f"gt={_trunc(ground_truth)} "
-            f"pred={_trunc(pred_answer)}"
-        )
-        return 0.0
-
-
-def _get_question_from_obj(obj: Dict[str, Any]) -> str:
-    """
-    兼容你说的格式：data["prompt"][0]["content"]
-    也做一些保底。
-    """
-    p = obj.get("prompt", "")
-    if isinstance(p, list) and len(p) > 0 and isinstance(p[0], dict):
-        return str(p[0].get("content", ""))
-    if isinstance(p, str):
-        return p
-    return ""
-
-
-def compute_score_router(
-    obj: Dict[str, Any],
-    solution_str: str,
-    cfg: Optional[JudgeConfig] = None,
-) -> float:
-    """
-    根据 data_source 分流：
-    - LOCAL_SOURCES -> 走你现有 compute_score 逻辑
-    - 其它 -> API judge
-    """
-    data_source: str = obj.get("data_source", "unknown")
-    gt = obj["reward_model"]["ground_truth"]
-
-    if data_source in LOCAL_SOURCES:
-        return compute_score(
-            data_source=data_source,
-            solution_str=solution_str,
-            ground_truth=gt,
-        )
-
-    # 走 API judge
-    if cfg is None:
-        # 没配置就保守返回 0
-        return 0.0
-
-    question = _get_question_from_obj(obj)
-    return api_judge_score(question, gt, solution_str, cfg)
+    # read scores
+    scores: List[float] = []
+    for ans in pred_answers:
+        if not ans:
+            scores.append(0.0)
+            continue
+        ck = _cache_key(question, ground_truth, ans)
+        scores.append(_JUDGE_VERDICT_CACHE.get(ck, 0.0))
+    return scores
 
 
 # =====================
-# 5) Main eval
+# 8) Main evaluation: pass@1, pass@k, optional per-response jsonl
 # =====================
-def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
-                   judge_cfg: Optional[JudgeConfig] = None,
-                   output_jsonl: Optional[str] = None) -> None:
+def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_jsonl: Optional[str], rt: JudgeRuntime) -> None:
     if k <= 0:
         raise ValueError(f"k must be positive, got k={k}")
 
     total = 0
     pass1_correct = 0.0
     passk_correct = 0.0
+    llm_judge_fail = 0
 
     jsonl_f = None
-    if output_jsonl is not None and is_main_process():
-        dir_path = os.path.dirname(output_jsonl)
-        local_mkdir(dir_path)
+    if output_jsonl and is_main_process():
+        local_mkdir(os.path.dirname(output_jsonl))
         jsonl_f = open(output_jsonl, "w", encoding="utf-8")
 
     for obj in _iter_records(file_path):
@@ -396,22 +414,26 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
             continue
 
         total += 1
+        data_source = obj.get("data_source", "unknown")
+        gt = obj["reward_model"]["ground_truth"]
 
+        # need full per-response correctness
         if jsonl_f is not None:
-            # If you ask for per-response correctness, we must score every response.
-            scores = [
-                compute_score_router(
-                    obj=obj,
-                    solution_str=sol,
-                    cfg=judge_cfg,
-                )
-                for sol in responses
-            ]
+            if data_source in LOCAL_SOURCES:
+                scores = [compute_score(data_source=data_source, solution_str=sol, ground_truth=gt) for sol in responses]
+            else:
+                question = _get_question_from_obj(obj)
+                pred_answers = [extract_solution_inside_boxed(sol) for sol in responses]
+                scores = judge_scores_for_answers(question, gt, pred_answers, rt)
+                for ans in pred_answers:
+                    if not ans:
+                        continue
+                    ck = _cache_key(question, gt, ans)
+                    if ck in _JUDGE_PARSEFAIL_KEYS:
+                        llm_judge_fail += 1
+
             corrects = [1 if s > 0 else 0 for s in scores]
-
-            # pass@1 / pass@k are computed from the same per-response scores.
             pass1_correct += float(corrects[0])
-
             num_to_use = min(k, len(corrects))
             passk_correct += 1.0 if any(corrects[:num_to_use]) else 0.0
 
@@ -428,27 +450,32 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
             )
             continue
 
-        # pass@1
-        pass1_correct += compute_score_router(
-            obj=obj,
-            solution_str=responses[0],
-            cfg=judge_cfg,
-        )
+        # no output_jsonl: compute pass@1 & pass@k (batch judge for non-local)
+        if data_source in LOCAL_SOURCES:
+            s1 = compute_score(data_source=data_source, solution_str=responses[0], ground_truth=gt)
+            pass1_correct += 1.0 if s1 > 0 else 0.0
 
-        # pass@k
-        num_to_use = min(k, len(responses))
-        any_correct_k = 0.0
-        for sol in responses[:num_to_use]:
-            score = compute_score_router(
-                obj=obj,
-                solution_str=sol,
-                cfg=judge_cfg,
-            )
-            if score > 0:
-                any_correct_k = 1.0
-                break
+            any_ok = 0.0
+            for sol in responses[: min(k, len(responses))]:
+                if compute_score(data_source=data_source, solution_str=sol, ground_truth=gt) > 0:
+                    any_ok = 1.0
+                    break
+            passk_correct += any_ok
+        else:
+            question = _get_question_from_obj(obj)
+            num_to_use = min(k, len(responses))
+            pred_answers_k = [extract_solution_inside_boxed(sol) for sol in responses[:num_to_use]]
+            scores_k = judge_scores_for_answers(question, gt, pred_answers_k, rt)
 
-        passk_correct += any_correct_k
+            for ans in pred_answers_k:
+                if not ans:
+                    continue
+                ck = _cache_key(question, gt, ans)
+                if ck in _JUDGE_PARSEFAIL_KEYS:
+                    llm_judge_fail += 1
+
+            pass1_correct += 1.0 if (scores_k[0] > 0) else 0.0
+            passk_correct += 1.0 if any(s > 0 for s in scores_k) else 0.0
 
     if jsonl_f is not None:
         jsonl_f.close()
@@ -466,31 +493,24 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
     print(f"Pass@1 accuracy: {pass1_acc:.4%}")
     print(f"Pass@{k} accuracy (any of first {k} responses correct): {passk_acc:.4%}")
 
-    # ===== 保存结果 =====
     if output_path is None:
         output_path = "recipe/GARO/evaluation_results.json"
 
-    base_name = os.path.basename(file_path)
-    file_stem, _ = os.path.splitext(base_name)
-
-    metrics = {
-        "file": file_path,
-        "file_name": file_stem,
-        "total_samples": total,
-        "k": k,
-        "pass_at_1": {
-            "correct": pass1_correct,
-            "accuracy": pass1_acc,
-        },
-        "pass_at_k": {
-            "correct": passk_correct,
-            "accuracy": passk_acc,
-        },
-    }
-
     if is_main_process():
-        dir_path = os.path.dirname(output_path)
-        local_mkdir(dir_path)
+        local_mkdir(os.path.dirname(output_path))
+        base_name = os.path.basename(file_path)
+        file_stem, _ = os.path.splitext(base_name)
+
+        metrics = {
+            "file": file_path,
+            "file_name": file_stem,
+            "total_samples": total,
+            "k": k,
+            "pass_at_1": {"correct": pass1_correct, "accuracy": pass1_acc},
+            "pass_at_k": {"correct": passk_correct, "accuracy": passk_acc},
+        }
+        if llm_judge_fail > 0:
+            metrics["llm_judge_fail"] = llm_judge_fail
 
         with open(output_path, "w", encoding="utf-8") as fout:
             json.dump(metrics, fout, ensure_ascii=False, indent=2)
@@ -498,80 +518,34 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str] = None,
         print(f"Metrics written to: {output_path}")
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--file",
-        type=str,
-        required=True,
-        help="Path to JSONL/Parquet with fields: prompt, responses, reward_model.ground_truth, data_source",
-    )
-    parser.add_argument(
-        "--k",
-        type=int,
-        required=True,
-        help="k for pass@k. We look at the first k responses for each sample.",
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Optional path to save metrics JSON",
-    )
-
-    # ===== Judge backend args =====
-    parser.add_argument(
-        "--judge_backend",
-        type=str,
-        default=os.getenv("JUDGE_BACKEND", "qwen_primus"),
-        choices=["qwen_primus", "openai_compat"],
-        help="LLM-as-judge backend. Default: qwen_primus",
-    )
-
-    parser.add_argument(
-        "--output_jsonl",
-        type=str,
-        default=None,
-        help="Optional path to save per-sample JSONL: {prompt, responses, response_correct}",
-    )
-
-    # ---- openai_compat ----
-    parser.add_argument("--judge_api_base", type=str, default=os.getenv("JUDGE_API_BASE", ""))
-    parser.add_argument("--judge_api_key", type=str, default=os.getenv("JUDGE_API_KEY", ""))
-    parser.add_argument("--judge_model", type=str, default=os.getenv("JUDGE_MODEL", "gpt-4o-mini"))
-    parser.add_argument("--judge_timeout", type=int, default=int(os.getenv("JUDGE_TIMEOUT", "60")))
-    parser.add_argument("--judge_temperature", type=float, default=float(os.getenv("JUDGE_TEMPERATURE", "0.0")))
-
-    # ---- qwen_primus ----
-    parser.add_argument("--qwen_api_key", type=str, default="REDACTED_QWEN_API_KEY")
-    parser.add_argument("--qwen_text_model_url", type=str, default="http://shenma-ai-pub.alibaba-inc.com/v1/completions")
-    parser.add_argument("--qwen_model_name", type=str, default="qwen3-235b-instruct-trans-sg")
-    parser.add_argument("--qwen_verbose", action="store_true", help="Print qwen request_id / debug logs")
-
+    parser.add_argument("--file", type=str, required=True)
+    parser.add_argument("--k", type=int, required=True)
+    parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--output_jsonl", type=str, default=None)
+    # ---- qwen_cluster judge runtime (formerly env vars) ----
+    parser.add_argument("--qwen_ip", type=str, default="10.2.4.24")
+    parser.add_argument("--qwen_port", type=str, default="8000")
+    parser.add_argument("--qwen_text_model_url", type=str, default="http://localhost:port/v1/completions")
+    parser.add_argument("--qwen_max_workers", type=int, default=96)
+    parser.add_argument("--qwen_partition_size", type=int, default=192)
+    parser.add_argument("--qwen_max_tokens", type=int, default=32)
+    parser.add_argument("--judge_timeout", type=int, default=300)
     args = parser.parse_args()
 
-    # Build judge config.
-    # - qwen_primus: enabled by default (uses defaults in qwen_primus.py if you don't pass key/url)
-    # - openai_compat: only enabled if api_base/api_key are provided
-    judge_cfg = None
-    if args.judge_backend == "qwen_primus":
-        judge_cfg = JudgeConfig(
-            backend="qwen_primus",
-            timeout=args.judge_timeout,
-            qwen_api_key=args.qwen_api_key,
-            qwen_text_model_url=args.qwen_text_model_url,
-            qwen_model_name=args.qwen_model_name,
-            qwen_verbose=args.qwen_verbose,
-        )
-    else:
-        if args.judge_api_base and args.judge_api_key:
-            judge_cfg = JudgeConfig(
-                backend="openai_compat",
-                api_base=args.judge_api_base,
-                api_key=args.judge_api_key,
-                model=args.judge_model,
-                timeout=args.judge_timeout,
-                temperature=args.judge_temperature,
-            )
+    rt = _get_judge_runtime(
+        ip=args.qwen_ip,
+        port=args.qwen_port,
+        url_tmpl=args.qwen_text_model_url,
+        max_workers=args.qwen_max_workers,
+        partition_size=args.qwen_partition_size,
+        max_tokens=args.qwen_max_tokens,
+        timeout_seconds=args.judge_timeout,
+    )
 
-    eval_pass_at_k(args.file, args.k, args.output, judge_cfg=judge_cfg, output_jsonl=args.output_jsonl)
+    eval_pass_at_k(args.file, args.k, args.output, args.output_jsonl, rt)
+
+
+if __name__ == "__main__":
+    main()
