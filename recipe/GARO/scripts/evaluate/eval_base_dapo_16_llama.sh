@@ -42,7 +42,7 @@ TMP_PATHS=()
 EVAL_PATHS=()
 EVAL_JSONL_PATHS=()
 for t in "${TASKS[@]}"; do
-  DATA_PATHS+=("${DATA_DIR}/GARO/test_data/${t}.parquet")
+  DATA_PATHS+=("${DATA_DIR}/GARO/train_data/${t}.parquet")
   TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}.parquet")
   EVAL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.json")
   EVAL_JSONL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.details.jsonl")
