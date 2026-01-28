@@ -18,7 +18,7 @@ if [ $# -lt 3 ]; then
   exit 1
 fi
 
-TASK_LIST="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
+TASK_LIST="math500,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
 MODEL="$1"
 STEP="$2"
 JOB_ID="$3"
