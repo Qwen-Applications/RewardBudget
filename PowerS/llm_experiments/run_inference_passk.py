@@ -116,27 +116,18 @@ def _set_global_determinism(seed: int) -> None:
 
 def _default_ckpts_from_env() -> List[str]:
     """
-    Default to the same two model IDs commonly used in eval scripts:
-      ${PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR} with format "qwen:path1;llama:path2"
+    Hard-coded: load exactly two models from ${PRIMUS_SOURCE_CHECKPOINT_DIR}:
+      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B
+      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct
     """
-    multi_base = os.environ.get("PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR")
-    if not multi_base:
+    base = os.environ.get("PRIMUS_SOURCE_CHECKPOINT_DIR")
+    if not base:
         return []
-    
-    ckpt_paths = []
-    # Parse format: "qwen:path1;llama:path2"
-    model_entries = multi_base.split(";")
-    for entry in model_entries:
-        if ":" in entry:
-            model, path = entry.split(":", 1)
-            base = path.strip()
-            model = "Qwen3-8B" if model.lower() == "qwen" else "Llama-3.2-3B-Instruct"
-            ckpt_paths.append(str(Path(base, model)))
-        else:
-            # If no colon, treat entire entry as path
-            ckpt_paths.append(entry.strip())
-    
-    return ckpt_paths
+    base = os.path.expandvars(base)
+    return [
+        str(Path(base) / "Qwen3-8B"),
+        str(Path(base) / "Llama-3.2-3B-Instruct"),
+    ]
 
 
 def _split_csv(x: Optional[str]) -> List[str]:
@@ -715,16 +706,15 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "Local HF ckpt/model path. If omitted (and --ckpts is also omitted), "
-            "defaults to two models under $PRIMUS_SOURCE_CHECKPOINT_DIR: "
-            "Qwen3-8B and Llama-3.2-3B-Instruct."
+            "IGNORED. This script always loads exactly two models from "
+            "$PRIMUS_SOURCE_CHECKPOINT_DIR: Qwen3-8B and Llama-3.2-3B-Instruct."
         ),
     )
     parser.add_argument(
         "--ckpts",
         type=str,
         default=None,
-        help="Comma-separated list of local HF ckpt/model paths (overrides --ckpt).",
+        help="IGNORED. Kept for backward-compatibility.",
     )
     parser.add_argument(
         "--datasets",
@@ -920,8 +910,21 @@ def main() -> None:
 
     powers_root = Path(__file__).resolve().parents[1]
     project_root = Path(__file__).resolve().parents[2]
+    # Always evaluate exactly these two models (hard-coded by requirement).
+    ckpt_list = _default_ckpts_from_env()
+    if not ckpt_list:
+        raise ValueError(
+            "PRIMUS_SOURCE_CHECKPOINT_DIR is not set (or empty). "
+            "Please set it so that the following paths exist:\n"
+            "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B\n"
+            "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct"
+        )
+    if args.ckpt or args.ckpts:
+        print(
+            "[WARN] --ckpt/--ckpts are ignored. "
+            "Using PRIMUS_SOURCE_CHECKPOINT_DIR hard-coded models instead."
+        )
 
-    datasets = resolve_datasets(args.datasets, args.data_root, powers_root)
 
     # ---------------------
     # verl backend
@@ -949,55 +952,24 @@ def main() -> None:
         tmp_dir = Path(args.tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
-        run_tag = (args.run_tag or "").strip()
-        if not run_tag:
+        # Base tag (shared across models); per-model tag is prefixed to avoid collisions.
+        base_tag = (args.run_tag or "").strip()
+        if not base_tag:
             if (args.model or "").strip() and (args.step or "").strip():
-                run_tag = f"{args.model.strip()}_{args.step.strip()}"
+                base_tag = f"{args.model.strip()}_{args.step.strip()}"
             elif (args.model or "").strip():
-                run_tag = args.model.strip()
+                base_tag = args.model.strip()
             else:
-                run_tag = _default_run_tag(args.ckpt)
-        run_tag = _sanitize_tag(run_tag)
+                base_tag = "run"
+        base_tag = _sanitize_tag(base_tag)
 
         data_paths = [ds.path for ds in datasets]
-        tmp_paths = [tmp_dir / f"{ds.name}_{run_tag}.parquet" for ds in datasets]
 
-        eval_paths = [out_dir / f"{ds.name}_{run_tag}.eval.json" for ds in datasets]
-        eval_jsonl_paths = [
-            (out_dir / f"{ds.name}_{run_tag}.eval.details.jsonl") for ds in datasets
-        ]
-
-        print(
-            f"[INFO] Backend=verl | run_tag={run_tag} | out_dir={out_dir} | tmp_dir={tmp_dir}"
-        )
-        print(f"[INFO] Checkpoint path: {args.ckpt}")
-        print(f"[INFO] Data path(s): {' '.join(map(str, data_paths))}")
-
-        _run_verl_generation_multi(
-            project_root=project_root,
-            ckpt=args.ckpt,
-            data_paths=data_paths,
-            output_paths=tmp_paths,
-            nnodes=int(args.nnodes),
-            n_gpus_per_node=int(args.n_gpus_per_node),
-            n_samples=int(args.k),
-            temperature=float(args.temperature),
-            top_p=float(args.top_p),
-            prompt_key=str(args.prompt_key),
-            prompt_length=int(args.prompt_length),
-            response_length=int(args.response_length),
-            trust_remote_code=bool(args.trust_remote_code),
-            tensor_model_parallel_size=int(args.tensor_parallel_size),
-            pipeline_model_parallel_size=int(args.pipeline_model_parallel_size),
-            actor_rollout_mode=str(args.actor_rollout_mode),
-            verl_batch_size=int(args.verl_batch_size),
-        )
-
-        summary: Dict[str, Any] = {
+        multi_summary: Dict[str, Any] = {
             "timestamp": _now_iso(),
-            "ckpt": args.ckpt,
             "backend": "verl",
-            "run_tag": run_tag,
+            "base_tag": base_tag,
+            "models": {},
             "generation": {
                 "k": int(args.k),
                 "temperature": float(args.temperature),
@@ -1011,56 +983,102 @@ def main() -> None:
                 "actor_rollout_mode": str(args.actor_rollout_mode),
                 "batch_size": int(args.verl_batch_size),
             },
-            "datasets": {},
         }
 
-        # Copy parquet into output dir (mirrors eval_all.sh's rclone copy) + evaluate
-        for ds, tmp_p, eval_p, eval_j in zip(datasets, tmp_paths, eval_paths, eval_jsonl_paths):
-            if not tmp_p.exists():
-                raise FileNotFoundError(f"verl output parquet not found: {tmp_p}")
+        for ckpt in ckpt_list:
+            ckpt = os.path.expandvars(ckpt)
+            model_tag = _sanitize_tag(Path(ckpt.rstrip("/")).name or "model")
+            run_tag = _sanitize_tag(f"{model_tag}_{base_tag}" if base_tag else model_tag)
 
-            out_parquet = out_dir / tmp_p.name
-            shutil.copy2(tmp_p, out_parquet)
+            tmp_paths = [tmp_dir / f"{ds.name}_{run_tag}.parquet" for ds in datasets]
+            eval_paths = [out_dir / f"{ds.name}_{run_tag}.eval.json" for ds in datasets]
+            eval_jsonl_paths = [
+                (out_dir / f"{ds.name}_{run_tag}.eval.details.jsonl") for ds in datasets
+            ]
 
-            _run_recipe_evaluation(
+            print(
+                f"[INFO] Backend=verl | model={model_tag} | run_tag={run_tag} | out_dir={out_dir} | tmp_dir={tmp_dir}"
+            )
+            print(f"[INFO] Checkpoint path: {ckpt}")
+            print(f"[INFO] Data path(s): {' '.join(map(str, data_paths))}")
+
+            _run_verl_generation_multi(
                 project_root=project_root,
-                file_path=tmp_p,
-                k=int(args.k),
-                output_json=eval_p,
-                output_jsonl=None if bool(args.no_eval_details) else eval_j,
-                judge_backend=args.judge_backend,
+                ckpt=ckpt,
+                data_paths=data_paths,
+                output_paths=tmp_paths,
+                nnodes=int(args.nnodes),
+                n_gpus_per_node=int(args.n_gpus_per_node),
+                n_samples=int(args.k),
+                temperature=float(args.temperature),
+                top_p=float(args.top_p),
+                prompt_key=str(args.prompt_key),
+                prompt_length=int(args.prompt_length),
+                response_length=int(args.response_length),
+                trust_remote_code=bool(args.trust_remote_code),
+                tensor_model_parallel_size=int(args.tensor_parallel_size),
+                pipeline_model_parallel_size=int(args.pipeline_model_parallel_size),
+                actor_rollout_mode=str(args.actor_rollout_mode),
+                verl_batch_size=int(args.verl_batch_size),
             )
 
-            metrics: Dict[str, Any] = {}
-            if eval_p.exists():
-                try:
-                    metrics = json.loads(eval_p.read_text(encoding="utf-8"))
-                except Exception:
-                    metrics = {}
-
-            summary["datasets"][ds.name] = {
-                "data_path": str(ds.path),
-                "tmp_parquet": str(tmp_p),
-                "parquet": str(out_parquet),
-                "eval_json": str(eval_p),
-                "eval_details_jsonl": None if bool(args.no_eval_details) else str(eval_j),
-                "metrics": metrics,
+            model_summary: Dict[str, Any] = {
+                "ckpt": ckpt,
+                "model_tag": model_tag,
+                "run_tag": run_tag,
+                "datasets": {},
             }
 
-            # Best-effort friendly one-liner
-            passk = None
-            try:
-                passk = float(metrics.get("pass_at_k", {}).get("accuracy"))
-            except Exception:
-                passk = None
-            if passk is not None:
-                print(
-                    f"[INFO] {ds.name}: pass@{int(args.k)}={passk:.4f} -> {eval_p}"
-                )
-            else:
-                print(f"[INFO] {ds.name}: evaluated -> {eval_p}")
+            # Copy parquet into output dir (mirrors eval_all.sh's rclone copy) + evaluate
+            for ds, tmp_p, eval_p, eval_j in zip(
+                datasets, tmp_paths, eval_paths, eval_jsonl_paths
+            ):
+                if not tmp_p.exists():
+                    raise FileNotFoundError(f"verl output parquet not found: {tmp_p}")
 
-        _json_dump(summary, out_dir / "passk_summary.json")
+                out_parquet = out_dir / tmp_p.name
+                shutil.copy2(tmp_p, out_parquet)
+
+                _run_recipe_evaluation(
+                    project_root=project_root,
+                    file_path=tmp_p,
+                    k=int(args.k),
+                    output_json=eval_p,
+                    output_jsonl=None if bool(args.no_eval_details) else eval_j,
+                    judge_backend=args.judge_backend,
+                )
+
+                metrics: Dict[str, Any] = {}
+                if eval_p.exists():
+                    try:
+                        metrics = json.loads(eval_p.read_text(encoding="utf-8"))
+                    except Exception:
+                        metrics = {}
+                model_summary["datasets"][ds.name] = {
+                    "data_path": str(ds.path),
+                    "tmp_parquet": str(tmp_p),
+                    "parquet": str(out_parquet),
+                    "eval_json": str(eval_p),
+                    "eval_details_jsonl": None
+                    if bool(args.no_eval_details)
+                    else str(eval_j),
+                    "metrics": metrics,
+                }
+
+                # Best-effort friendly one-liner
+                passk = None
+                try:
+                    passk = float(metrics.get("pass_at_k", {}).get("accuracy"))
+                except Exception:
+                    passk = None
+                if passk is not None:
+                    print(f"[INFO] {model_tag} / {ds.name}: pass@{int(args.k)}={passk:.4f} -> {eval_p}")
+                else:
+                    print(f"[INFO] {model_tag} / {ds.name}: evaluated -> {eval_p}")
+
+            multi_summary["models"][model_tag] = model_summary
+
+        _json_dump(multi_summary, out_dir / "passk_summary.json")
         print(f"[INFO] Wrote summary: {out_dir / 'passk_summary.json'}")
         return
 
@@ -1080,17 +1098,9 @@ def main() -> None:
         seed=int(args.seed),
     )
 
-    # Resolve ckpt list:
-    #   --ckpts (CSV) > --ckpt (single) > env default list
-    ckpt_list = _split_csv(args.ckpts)
-    if not ckpt_list and args.ckpt:
-        ckpt_list = [args.ckpt]
+    # Always use env hard-coded models (ignore --ckpt/--ckpts).
     if not ckpt_list:
-        ckpt_list = _default_ckpts_from_env()
-    if not ckpt_list:
-        raise ValueError(
-            "No checkpoint specified. Provide --ckpt/--ckpts or set $PRIMUS_SOURCE_CHECKPOINT_DIR."
-        )
+        raise ValueError("PRIMUS_SOURCE_CHECKPOINT_DIR is not set; cannot locate hard-coded models.")
 
     multi_summary: Dict[str, Any] = {
         "timestamp": _now_iso(),
