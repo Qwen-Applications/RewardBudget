@@ -50,7 +50,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -104,13 +104,6 @@ def _json_dump(obj: Any, path: Path) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
-def _jsonl_write(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-
 def _set_global_determinism(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -118,9 +111,27 @@ def _set_global_determinism(seed: int) -> None:
     if _HAS_TORCH:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        # Make CuDNN deterministic where possible.
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+def _expand_path_str(x: str) -> str:
+    """Expand env vars + ~ and return a string."""
+    return os.path.expandvars(os.path.expanduser(x))
+
+
+def _expand_path(x: Union[str, Path]) -> Path:
+    """Expand env vars + ~ and return a Path (not necessarily exists)."""
+    p = Path(_expand_path_str(str(x)))
+    return p
+
+
+def _sanitize_tag(s: str) -> str:
+    s = s.strip()
+    if not s:
+        return "run"
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
+    return s.strip("._-") or "run"
 
 
 def _default_ckpts_from_env() -> List[str]:
@@ -132,21 +143,30 @@ def _default_ckpts_from_env() -> List[str]:
     base = os.environ.get("PRIMUS_SOURCE_CHECKPOINT_DIR")
     if not base:
         return []
-    base = os.path.expandvars(base)
+    base = _expand_path_str(base)
     return [
         str(Path(base) / "Qwen3-8B"),
         str(Path(base) / "Llama-3.2-3B-Instruct"),
     ]
 
 
-def _split_csv(x: Optional[str]) -> List[str]:
-    if not x:
-        return []
-    return [s.strip() for s in x.split(",") if s.strip()]
-
-
-def _normalize_dataset_name(name: str) -> str:
-    return name.strip()
+def _validate_ckpt_dir(ckpt: str) -> None:
+    """
+    verl/vllm/transformers expect a *real local HF model directory*.
+    If ckpt is a base dir like /primus_source_checkpoint (not a model dir),
+    transformers may treat it like a hub repo id and throw HFValidationError.
+    """
+    p = _expand_path(ckpt)
+    # We validate by checking config.json (most reliable signal).
+    cfg = p / "config.json"
+    if not cfg.exists():
+        raise FileNotFoundError(
+            f"Invalid checkpoint path (missing config.json): {p}\n"
+            "This must be a local HuggingFace model directory.\n"
+            "Expected something like:\n"
+            "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B\n"
+            "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct\n"
+        )
 
 
 def _maybe_parse_json(x: Any) -> Any:
@@ -161,8 +181,6 @@ def _maybe_parse_json(x: Any) -> Any:
 
 
 def _extract_ground_truth(ex: Dict[str, Any]) -> Optional[str]:
-    # Common patterns in the user's GARO parquet/jsonl:
-    #   reward_model: {"ground_truth": "..."}
     rm = ex.get("reward_model")
     rm = _maybe_parse_json(rm)
     if isinstance(rm, dict):
@@ -170,7 +188,6 @@ def _extract_ground_truth(ex: Dict[str, Any]) -> Optional[str]:
         if gt is not None:
             return str(gt)
 
-    # Common patterns in this repo's json:
     for k in ("answer", "ground_truth", "gt", "solution"):
         if k in ex and ex[k] is not None:
             return str(ex[k])
@@ -182,7 +199,6 @@ def _prompt_to_text(prompt: Any, tokenizer: Optional[Any]) -> str:
     if isinstance(prompt, str):
         return prompt
 
-    # Some datasets store prompts as a list of {role, content} messages.
     if isinstance(prompt, list):
         if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
             if all(isinstance(m, dict) and "role" in m and "content" in m for m in prompt):
@@ -193,7 +209,6 @@ def _prompt_to_text(prompt: Any, tokenizer: Optional[Any]) -> str:
                 except Exception:
                     pass
 
-        # Fallback join.
         try:
             return "\n".join(
                 m.get("content", str(m)) if isinstance(m, dict) else str(m) for m in prompt
@@ -205,8 +220,6 @@ def _prompt_to_text(prompt: Any, tokenizer: Optional[Any]) -> str:
 
 
 def _extract_final_answer(text: str) -> str:
-    """Extract a short answer string from a model response."""
-
     boxed = parse_answer(text)
     if boxed is not None:
         return boxed.strip()
@@ -230,31 +243,17 @@ def _safe_grade(ans: str, gt: str) -> int:
         return 0
 
 
-def _sanitize_tag(s: str) -> str:
-    s = s.strip()
-    if not s:
-        return "run"
-    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
-    return s.strip("._-") or "run"
-
-
 # -----------------------------
 # eval_all.sh-compatible (verl)
 # -----------------------------
 
 
 def _set_eval_all_env_defaults() -> None:
-    """Best-effort defaults mirroring recipe/GARO/scripts/evaluate/eval_all.sh exports."""
     os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")
     os.environ.setdefault("VLLM_ALLREDUCE_USE_SYMM_MEM", "0")
     os.environ.setdefault("VLLM_USE_NCCL_SYMM_MEM", "0")
     os.environ.setdefault("HYDRA_FULL_ERROR", "1")
     os.environ.setdefault("TORCH_SYMM_MEM_DISABLE_MULTICAST", "1")
-
-
-def _default_run_tag(ckpt: str) -> str:
-    base = Path(ckpt).name or "ckpt"
-    return _sanitize_tag(base)
 
 
 def _hydra_list_str(items: Sequence[Union[str, Path]]) -> str:
@@ -287,8 +286,6 @@ def _run_verl_generation_multi(
     actor_rollout_mode: str,
     verl_batch_size: int,
 ) -> None:
-    """Run verl.trainer.main_generation_multi similarly to eval_all.sh."""
-
     if temperature == 0.0 and n_samples != 1:
         raise ValueError(
             "verl.trainer.main_generation_multi asserts: when temperature=0, n_samples must be 1. "
@@ -367,13 +364,11 @@ class DatasetSpec:
     path: Path
 
 
-def resolve_datasets(
-    dataset_arg: str,
-    data_root: Optional[str],
-    repo_root: Path,
-) -> List[DatasetSpec]:
-    """Resolve a comma-separated dataset argument into local file paths."""
+def _normalize_dataset_name(name: str) -> str:
+    return name.strip()
 
+
+def resolve_datasets(dataset_arg: str, data_root: Optional[str], repo_root: Path) -> List[DatasetSpec]:
     names = [_normalize_dataset_name(x) for x in dataset_arg.split(",") if x.strip()]
     specs: List[DatasetSpec] = []
 
@@ -383,14 +378,14 @@ def resolve_datasets(
     }
 
     for name in names:
-        p = Path(name)
+        p = _expand_path(name)
         if p.exists() and p.is_file():
             specs.append(DatasetSpec(name=p.stem, path=p))
             continue
 
         tried: List[Path] = []
         if data_root is not None:
-            cand_dir = Path(data_root) / "GARO" / "test_data"
+            cand_dir = _expand_path(data_root) / "GARO" / "test_data"
             cands = [
                 cand_dir / f"{name}.parquet",
                 cand_dir / f"{name}.jsonl",
@@ -419,8 +414,6 @@ def resolve_datasets(
 
 
 def iter_examples(path: Path, batch_size: int = 256) -> Iterator[Dict[str, Any]]:
-    """Yield raw example dicts from parquet/json/jsonl."""
-
     suf = path.suffix.lower()
     if suf == ".jsonl":
         with path.open("r", encoding="utf-8") as f:
@@ -575,7 +568,7 @@ class HFGenerator(Generator):
 
 
 # -----------------------------
-# Main evaluation loop
+# Main evaluation loop (legacy)
 # -----------------------------
 
 
@@ -610,9 +603,7 @@ def run_dataset(
         assert len(gens) == len(raw_buf)
 
         for ex, prompt_text, ex_gens in zip(raw_buf, prompt_buf, gens):
-            gt = _extract_ground_truth(ex)
-            if gt is None:
-                gt = ""
+            gt = _extract_ground_truth(ex) or ""
 
             gen_infos = []
             any_correct = False
@@ -643,8 +634,7 @@ def run_dataset(
         raw_buf = []
 
     for ex in iter_examples(ds.path, batch_size=batch_size):
-        prompt = ex.get("prompt")
-        prompt = _maybe_parse_json(prompt)
+        prompt = _maybe_parse_json(ex.get("prompt"))
         prompt_text = _prompt_to_text(prompt, tokenizer)
         prompt_buf.append(prompt_text)
         raw_buf.append(ex)
@@ -669,6 +659,11 @@ def run_dataset(
 
     _json_dump(metrics, out_dir / f"{ds_tag}.metrics.json")
     return metrics
+
+
+# -----------------------------
+# Main
+# -----------------------------
 
 
 def main() -> None:
@@ -712,10 +707,11 @@ def main() -> None:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=os.path.expandvars("${OUTPUT_DIR}/GARO/"),
+        default="${OUTPUT_DIR}",
         help=(
-            "Output directory (parent). For verl backend, outputs are written under <output_dir>/GARO. "
-            "For legacy backends, jsonl + summary are written directly under <output_dir>/<model_tag>/."
+            "Output directory (parent). Can contain env vars (e.g. ${OUTPUT_DIR}). "
+            "For verl backend, outputs are written under <output_dir>/GARO. "
+            "For legacy backends, jsonl + summary are written under <output_dir>/<model_tag>/."
         ),
     )
     parser.add_argument(
@@ -875,9 +871,7 @@ def main() -> None:
         type=str,
         default="qwen_primus",
         choices=["qwen_primus", "openai_compat"],
-        help=(
-            "Judge backend passed to recipe/GARO/scripts/evaluate/evaluation.py (verl backend)."
-        ),
+        help="Judge backend passed to recipe/GARO/scripts/evaluate/evaluation.py (verl backend).",
     )
     parser.add_argument(
         "--no_eval_details",
@@ -897,15 +891,32 @@ def main() -> None:
     ckpt_list = _default_ckpts_from_env()
     if not ckpt_list:
         raise ValueError(
-            "PRIMUS_SOURCE_CHECKPOINT_DIR is not set (or empty). "
+            "PRIMUS_SOURCE_CHECKPOINT_DIR is not set (or empty).\n"
             "Please set it so that the following paths exist:\n"
             "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B\n"
-            "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct"
+            "  ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct\n"
+            f"Current PRIMUS_SOURCE_CHECKPOINT_DIR={os.environ.get('PRIMUS_SOURCE_CHECKPOINT_DIR')!r}"
         )
+
+    # Strong validation: prevents accidentally passing base dir like /primus_source_checkpoint.
+    for ck in ckpt_list:
+        _validate_ckpt_dir(ck)
+
     if args.ckpt or args.ckpts:
         print(
             "[WARN] --ckpt/--ckpts are ignored. Using PRIMUS_SOURCE_CHECKPOINT_DIR hard-coded models."
         )
+
+    # Expand output dir correctly (and do NOT bake in /GARO twice).
+    out_root = _expand_path(args.output_dir)
+    if "${" in str(out_root) or "$" in str(out_root):
+        # This means user passed an env-var-like string but it didn't expand (env missing).
+        # We'll fail early with a clear message.
+        raise ValueError(
+            f"--output_dir contains an env var that did not expand: {args.output_dir!r}\n"
+            "Please export the environment variable(s) referenced by --output_dir."
+        )
+    out_root.mkdir(parents=True, exist_ok=True)
 
     # ---------------------
     # verl backend
@@ -925,11 +936,10 @@ def main() -> None:
                 f"Got non-parquet dataset(s): {bad}"
             )
 
-        out_parent = Path(args.output_dir)
-        out_dir = out_parent if out_parent.name == "GARO" else (out_parent / "GARO")
+        out_dir = out_root / "GARO"
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        tmp_dir = Path(args.tmp_dir)
+        tmp_dir = _expand_path(args.tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         base_tag = (args.run_tag or "").strip()
@@ -966,7 +976,9 @@ def main() -> None:
         }
 
         for ckpt in ckpt_list:
-            ckpt = os.path.expandvars(ckpt)
+            ckpt = _expand_path_str(ckpt)
+            _validate_ckpt_dir(ckpt)
+
             model_tag = _sanitize_tag(Path(ckpt.rstrip("/")).name or "model")
             run_tag = _sanitize_tag(f"{model_tag}_{base_tag}" if base_tag else model_tag)
 
@@ -1061,9 +1073,6 @@ def main() -> None:
     # legacy backends
     # ---------------------
 
-    out_root = Path(args.output_dir)
-    out_root.mkdir(parents=True, exist_ok=True)
-
     gen_cfg = GenConfig(
         k=int(args.k),
         max_new_tokens=int(args.max_new_tokens),
@@ -1088,10 +1097,12 @@ def main() -> None:
     }
 
     for ckpt in ckpt_list:
-        ckpt = os.path.expandvars(ckpt)
+        ckpt = _expand_path_str(ckpt)
+        _validate_ckpt_dir(ckpt)
+
         model_tag = _sanitize_tag(Path(ckpt.rstrip("/")).name or "model")
-        out_dir = out_root / model_tag
-        out_dir.mkdir(parents=True, exist_ok=True)
+        model_out_dir = out_root / model_tag
+        model_out_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"[INFO] Backend={args.backend} | Model={model_tag} ckpt={ckpt}")
 
@@ -1142,7 +1153,7 @@ def main() -> None:
                 gen=gen,
                 tokenizer=tokenizer,
                 cfg=gen_cfg,
-                out_dir=out_dir,
+                out_dir=model_out_dir,
                 batch_size=int(args.batch_size),
                 write_prompt_text=bool(args.write_prompt_text),
             )
@@ -1152,11 +1163,11 @@ def main() -> None:
                 f"(n={metrics['num_examples']}) -> {metrics['output_jsonl']}"
             )
 
-        _json_dump(summary, out_dir / "passk_summary.json")
-        print(f"[INFO] Wrote summary: {out_dir / 'passk_summary.json'}")
+        _json_dump(summary, model_out_dir / "passk_summary.json")
+        print(f"[INFO] Wrote summary: {model_out_dir / 'passk_summary.json'}")
         multi_summary["models"][model_tag] = {
             "ckpt": ckpt,
-            "summary_path": str(out_dir / "passk_summary.json"),
+            "summary_path": str(model_out_dir / "passk_summary.json"),
         }
 
     if len(ckpt_list) > 1:
