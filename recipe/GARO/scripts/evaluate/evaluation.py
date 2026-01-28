@@ -557,7 +557,7 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, required=True)
-    parser.add_argument("--k", type=int, required=True)
+    parser.add_argument("--k", type=int, default=1)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--output_jsonl", type=str, default=None)
     parser.add_argument("--log_every", type=int, default=100, help="Print progress every N samples")
