@@ -88,7 +88,6 @@ except Exception:  # pragma: no cover
 from grader_utils.math_grader import grade_answer
 from grader_utils.parse_utils import parse_answer
 
-
 # -----------------------------
 # Utils
 # -----------------------------
@@ -136,14 +135,14 @@ def _sanitize_tag(s: str) -> str:
 
 def _default_ckpts_from_env() -> List[str]:
     """
-    Hard-coded: load exactly two models from ${PRIMUS_SOURCE_CHECKPOINT_DIR}:
-      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Qwen3-8B
-      ${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama-3.2-3B-Instruct
+    Default to the same two model IDs commonly used in eval scripts:
+      ${PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR} with format "qwen:path1;llama:path2"
+      Example: llama:/primus_source_checkpoint_llama/Llama-3.2-3B-Instruct;qwen:/primus_source_checkpoint_qwen/Qwen3-8B
     """
-    base = os.environ.get("PRIMUS_SOURCE_CHECKPOINT_DIR")
-    if not base:
+    multi_base = os.environ.get("PRIMUS_SOURCE_CHECKPOINT_DIR")
+    if not multi_base:
         return []
-    base = _expand_path_str(base)
+    base = os.path.expandvars(base)
     return [
         str(Path(base) / "Qwen3-8B"),
         str(Path(base) / "Llama-3.2-3B-Instruct"),
