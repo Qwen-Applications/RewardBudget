@@ -40,8 +40,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import (Any, Dict, Iterable, Iterator, List, Optional, Sequence,
-                    Tuple, Union)
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -118,6 +117,7 @@ def _default_ckpts_from_env() -> List[str]:
     """
     Default to the same two model IDs commonly used in eval scripts:
       ${PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR} with format "qwen:path1;llama:path2"
+      Example: llama:/primus_source_checkpoint_llama/Llama-3.2-3B-Instruct;qwen:/primus_source_checkpoint_qwen/Qwen3-8B
     """
     multi_base = os.environ.get("PRIMUS_MULTI_SOURCE_CHECKPOINT_DIR")
     if not multi_base:
@@ -129,9 +129,8 @@ def _default_ckpts_from_env() -> List[str]:
     for entry in model_entries:
         if ":" in entry:
             model, path = entry.split(":", 1)
-            base = path.strip()
-            model = "Qwen3-8B" if model.lower() == "qwen" else "Llama-3.2-3B-Instruct"
-            ckpt_paths.append(str(Path(base, model)))
+            # Directly use the whole path given by env var
+            ckpt_paths.append(path.strip())
         else:
             # If no colon, treat entire entry as path
             ckpt_paths.append(entry.strip())
