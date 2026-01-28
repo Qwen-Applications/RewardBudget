@@ -179,18 +179,26 @@ def build_judge_prompt(question: str, ground_truth: str, pred_answer: str) -> st
         {
             "role": "system",
             "content": (
-                "Judge if the Predicted Answer matches the Ground Truth for the Given Problem.\n\n"
-                "Be strict on meaning, not format: ignore LaTeX/whitespace/notation; accept mathematically equivalent forms.\n"
-                "Respect required domain/units/exactness; allow small rounding error.\n\n"
-                "Reply ONLY with \\boxed{correct} or \\boxed{incorrect}."
+                "You are an expert grader for academic math benchmarks (e.g., AMC/AIME/Math500/OlympiadBench). "
+                "Given a Problem, a Ground-truth Answer, and a model's Predicted Answer, decide if the predicted answer is correct.\n\n"
+                "Rules:\n"
+                "1) Focus ONLY on the final answer, not the solution steps.\n"
+                "2) Ignore formatting differences (LaTeX, whitespace, punctuation, order) and accept mathematically equivalent forms.\n"
+                "3) Enforce required domain/units/type (integer vs fraction, exact value vs approximation).\n"
+                "4) If the problem expects an exact value, do NOT accept decimal approximations unless they are explicitly allowed.\n"
+                "5) If a numeric approximation is acceptable, allow small rounding error (typical tolerance 1e-4 relative or absolute) unless the problem states otherwise.\n"
+                "6) If multiple answers are valid (e.g., set/tuple), treat them as correct if they match as a set.\n\n"
+                "Output format (strict): reply with exactly one term in the form \\boxed{correct} or \\boxed{incorrect}. "
+                "Do not include any other words."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Given Problem: {question}\n"
-                f"Ground Truth: {ground_truth}\n"
-                f"Predicted Answer: {pred_answer}\n"
+                f"Problem:\n{question}\n\n"
+                f"Ground-truth Answer:\n{ground_truth}\n\n"
+                f"Predicted Answer:\n{pred_answer}\n"
+                "Is the Predicted Answer correct? Reply with either \\boxed{correct} or \\boxed{incorrect}."
             ),
         },
     ]
