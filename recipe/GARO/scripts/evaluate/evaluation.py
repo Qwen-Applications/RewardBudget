@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional
@@ -178,18 +179,26 @@ def build_judge_prompt(question: str, ground_truth: str, pred_answer: str) -> st
         {
             "role": "system",
             "content": (
-                "Judge if the Predicted Answer matches the Ground Truth for the Given Problem.\n\n"
-                "Be strict on meaning, not format: ignore LaTeX/whitespace/notation; accept mathematically equivalent forms.\n"
-                "Respect required domain/units/exactness; allow small rounding error.\n\n"
-                "Reply ONLY with \\boxed{correct} or \\boxed{incorrect}."
+                "You are an expert grader for academic math benchmarks (e.g., AMC/AIME/Math500/OlympiadBench). "
+                "Given a Problem, a Ground-truth Answer, and a model's Predicted Answer, decide if the predicted answer is correct.\n\n"
+                "Rules:\n"
+                "1) Focus ONLY on the final answer, not the solution steps.\n"
+                "2) Ignore formatting differences (LaTeX, whitespace, punctuation, order) and accept mathematically equivalent forms.\n"
+                "3) Enforce required domain/units/type (integer vs fraction, exact value vs approximation).\n"
+                "4) If the problem expects an exact value, do NOT accept decimal approximations unless they are explicitly allowed.\n"
+                "5) If a numeric approximation is acceptable, allow small rounding error (typical tolerance 1e-4 relative or absolute) unless the problem states otherwise.\n"
+                "6) If multiple answers are valid (e.g., set/tuple), treat them as correct if they match as a set.\n\n"
+                "Output format (strict): reply with exactly one term in the form \\boxed{correct} or \\boxed{incorrect}. "
+                "Do not include any other words."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Given Problem: {question}\n"
-                f"Ground Truth: {ground_truth}\n"
-                f"Predicted Answer: {pred_answer}\n"
+                f"Problem:\n{question}\n\n"
+                f"Ground-truth Answer:\n{ground_truth}\n\n"
+                f"Predicted Answer:\n{pred_answer}\n"
+                "Is the Predicted Answer correct? Reply with either \\boxed{correct} or \\boxed{incorrect}."
             ),
         },
     ]
@@ -394,7 +403,7 @@ def judge_scores_for_answers(question: str, ground_truth: str, pred_answers: Lis
 # =====================
 # 8) Main evaluation: pass@1, pass@k, optional per-response jsonl
 # =====================
-def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_jsonl: Optional[str], rt: JudgeRuntime) -> None:
+def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_jsonl: Optional[str], rt: JudgeRuntime, log_every: int) -> None:
     if k <= 0:
         raise ValueError(f"k must be positive, got k={k}")
 
@@ -408,6 +417,10 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
         local_mkdir(os.path.dirname(output_jsonl))
         jsonl_f = open(output_jsonl, "w", encoding="utf-8")
 
+    start_t = time.time()
+    last_log_t = start_t
+    log_every = max(int(log_every), 1)
+
     for obj in _iter_records(file_path):
         responses = obj.get("responses", None)
         if not responses:
@@ -416,6 +429,23 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
         total += 1
         data_source = obj.get("data_source", "unknown")
         gt = obj["reward_model"]["ground_truth"]
+
+        if is_main_process() and (total % log_every == 0):
+            now = time.time()
+            elapsed = now - start_t
+            delta = now - last_log_t
+            last_log_t = now
+            pass1_sofar = (pass1_correct / total) if total > 0 else 0.0
+            passk_sofar = (passk_correct / total) if total > 0 else 0.0
+            speed = (log_every / delta) if delta > 0 else 0.0
+            print(
+                f"[PROGRESS] processed={total} "
+                f"pass@1_sofar={pass1_sofar:.4%} "
+                f"pass@{k}_sofar={passk_sofar:.4%} "
+                f"llm_judge_fail={llm_judge_fail} "
+                f"speed={speed:.2f} samples/s "
+                f"elapsed={elapsed/60:.1f} min"
+            )
 
         # need full per-response correctness
         if jsonl_f is not None:
@@ -485,6 +515,10 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
         print("No valid samples found in file.")
         return
 
+    if is_main_process():
+        elapsed = time.time() - start_t
+        print(f"[PROGRESS] done processed={total} elapsed={elapsed/60:.1f} min")
+
     pass1_acc = pass1_correct / total
     passk_acc = passk_correct / total
 
@@ -511,6 +545,8 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
         }
         if llm_judge_fail > 0:
             metrics["llm_judge_fail"] = llm_judge_fail
+        print("[METRICS]")
+        print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
         with open(output_path, "w", encoding="utf-8") as fout:
             json.dump(metrics, fout, ensure_ascii=False, indent=2)
@@ -521,16 +557,17 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, required=True)
-    parser.add_argument("--k", type=int, required=True)
+    parser.add_argument("--k", type=int, default=1)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--output_jsonl", type=str, default=None)
+    parser.add_argument("--log_every", type=int, default=100, help="Print progress every N samples")
     # ---- qwen_cluster judge runtime (formerly env vars) ----
     parser.add_argument("--qwen_ip", type=str, default="10.2.4.24")
     parser.add_argument("--qwen_port", type=str, default="8000")
     parser.add_argument("--qwen_text_model_url", type=str, default="http://localhost:port/v1/completions")
     parser.add_argument("--qwen_max_workers", type=int, default=96)
     parser.add_argument("--qwen_partition_size", type=int, default=192)
-    parser.add_argument("--qwen_max_tokens", type=int, default=32)
+    parser.add_argument("--qwen_max_tokens", type=int, default=800)
     parser.add_argument("--judge_timeout", type=int, default=300)
     args = parser.parse_args()
 
@@ -544,7 +581,7 @@ def main() -> None:
         timeout_seconds=args.judge_timeout,
     )
 
-    eval_pass_at_k(args.file, args.k, args.output, args.output_jsonl, rt)
+    eval_pass_at_k(args.file, args.k, args.output, args.output_jsonl, rt, args.log_every)
 
 
 if __name__ == "__main__":

@@ -140,7 +140,8 @@ for idx in "${!TASKS[@]}"; do
   python3 recipe/GARO/scripts/evaluate/evaluation.py \
     --file ${tmp} --k 1 \
     --output ${evalp} \
-    --output_jsonl ${evalj}
+    --output_jsonl ${evalj} \
+    --qwen_ip "${QWEN_IP}"
 
   echo "[INFO] Evaluation completed for ${t}. Results saved to ${evalp} (details: ${evalj})"
 done
