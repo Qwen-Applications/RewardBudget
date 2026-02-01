@@ -394,6 +394,7 @@ def compute_reward_budget_mean_outcome_advantage(
     id2scores = defaultdict(list)
     id2min = {}
     id2sumg = {}
+    id2allzero = {}
 
     with torch.no_grad():
         bsz = scores.shape[0]
@@ -402,6 +403,7 @@ def compute_reward_budget_mean_outcome_advantage(
 
         for uid, lst in id2scores.items():
             s = torch.stack(lst)  # (G,)
+            id2allzero[uid] = bool((s.abs().max() <= epsilon).item())
             min_s = s.min()
             g = (s - min_s).clamp(min=0.0)
             sum_g = g.sum()
@@ -411,6 +413,9 @@ def compute_reward_budget_mean_outcome_advantage(
         adv_scalar = torch.zeros_like(scores)
         for i in range(bsz):
             uid = index[i]
+            if id2allzero[uid]:
+                adv_scalar[i] = -0.125
+                continue
             g_i = (scores[i] - id2min[uid]).clamp(min=0.0)
             if id2sumg[uid] <= epsilon:
                 adv_scalar[i] = 0.0
@@ -425,7 +430,11 @@ def compute_reward_budget_mean_outcome_advantage(
 
         baseline_scalar = torch.zeros_like(adv_scalar)
         for i in range(bsz):
-            baseline_scalar[i] = id2mean_adv[index[i]]
+            uid = index[i]
+            if id2allzero[uid]:
+                baseline_scalar[i] = 0.0
+            else:
+                baseline_scalar[i] = id2mean_adv[uid]
 
         adv_scalar = adv_scalar - baseline_scalar
         # end new-changes
