@@ -39,11 +39,13 @@ OUTPUT_PATH="${OUTPUT_DIR}/GARO/"
 
 DATA_PATHS=()
 TMP_PATHS=()
+OUTPUT_PARQUET_PATHS=()
 EVAL_PATHS=()
 EVAL_JSONL_PATHS=()
 for t in "${TASKS[@]}"; do
   DATA_PATHS+=("${DATA_DIR}/GARO/test_data/${t}.parquet")
   TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}.parquet")
+  OUTPUT_PARQUET_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.parquet")
   EVAL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.json")
   EVAL_JSONL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.details.jsonl")
 done
@@ -63,7 +65,7 @@ echo "[INFO] Output path: ${OUTPUT_PATH} (and temp path(s): ${TMP_PATHS[*]})"
 echo "[INFO] Evaluation path(s): ${EVAL_PATHS[*]}"
 
 # =========================
-# new-changes: print first row for debug (first task only)
+# print first row for debug (first task only)
 python - <<PY
 import pyarrow.parquet as pq
 
@@ -85,7 +87,6 @@ else:
     print("[DEBUG] First row prompt type:", type(row.get("prompt")).__name__)
     print("[DEBUG] First row prompt value:", row.get("prompt"))
 PY
-# end new-changes
 # =========================
 
 # export NNODES=1
@@ -128,17 +129,66 @@ python -m verl.trainer.main_generation_multi \
   rollout.tensor_model_parallel_size=1 \
   +actor_rollout_ref.rollout.mode=async
 
-# Copy results to output directory using rclone + evaluate each dataset
+echo "[INFO] Output parquet path(s): ${OUTPUT_PARQUET_PATHS[*]}"
+
+wait_for_file_ready() {
+  local file_path="$1"
+  local max_tries="${2:-60}"
+  local sleep_secs="${3:-2}"
+  local prev_size="-1"
+  local curr_size="-1"
+  local stable_count=0
+
+  for ((i=1; i<=max_tries; i++)); do
+    if [ -s "${file_path}" ]; then
+      curr_size=$(stat -c%s "${file_path}" 2>/dev/null || echo -1)
+      if [ "${curr_size}" -gt 0 ] && [ "${curr_size}" -eq "${prev_size}" ]; then
+        stable_count=$((stable_count + 1))
+      else
+        stable_count=0
+      fi
+      if [ "${stable_count}" -ge 1 ]; then
+        echo "[INFO] File ready: ${file_path} (size=${curr_size})"
+        return 0
+      fi
+      prev_size="${curr_size}"
+    fi
+    echo "[INFO] Waiting for file to be ready (${i}/${max_tries}): ${file_path}"
+    sleep "${sleep_secs}"
+  done
+
+  echo "[ERROR] File not ready after waiting: ${file_path}"
+  return 1
+}
+
+# Phase 1: wait for all generated parquet files to be fully materialized.
 for idx in "${!TASKS[@]}"; do
   t=${TASKS[$idx]}
   tmp=${TMP_PATHS[$idx]}
+  echo "[INFO] Waiting for generated parquet of ${t}: ${tmp}"
+  wait_for_file_ready "${tmp}"
+done
+
+# Phase 2: copy all parquet files to the output directory first.
+for idx in "${!TASKS[@]}"; do
+  t=${TASKS[$idx]}
+  tmp=${TMP_PATHS[$idx]}
+  out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
+
+  echo "[INFO] Copying generated parquet for ${t}: ${tmp} -> ${OUTPUT_PATH}"
+  rclone copy ${tmp} ${OUTPUT_PATH} --progress --transfers=80
+  wait_for_file_ready "${out_parquet}"
+done
+
+# Phase 3: after every parquet is present and stable, run evaluation.
+for idx in "${!TASKS[@]}"; do
+  t=${TASKS[$idx]}
+  out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
   evalp=${EVAL_PATHS[$idx]}
   evalj=${EVAL_JSONL_PATHS[$idx]}
 
-  rclone copy ${tmp} ${OUTPUT_PATH} --progress --transfers=80
-
   python3 recipe/GARO/scripts/evaluate/evaluation.py \
-    --file ${tmp} --k 8 \
+    --file ${out_parquet} --k 8 \
     --output ${evalp} \
     --output_jsonl ${evalj} \
     --qwen_ip "${QWEN_IP}"
