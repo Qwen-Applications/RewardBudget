@@ -24,6 +24,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional
 
+import math
+
 import requests
 import torch
 
@@ -403,6 +405,16 @@ def judge_scores_for_answers(question: str, ground_truth: str, pred_answers: Lis
 # =====================
 # 8) Main evaluation: pass@1, pass@k, optional per-response jsonl
 # =====================
+def _compute_mean_and_std(values: List[float]) -> Dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "std": 0.0}
+    mean = sum(values) / len(values)
+    if len(values) <= 1:
+        return {"mean": mean, "std": 0.0}
+    var = sum((x - mean) ** 2 for x in values) / (len(values) - 1)
+    return {"mean": mean, "std": math.sqrt(max(var, 0.0))}
+
+
 def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_jsonl: Optional[str], rt: JudgeRuntime, log_every: int) -> None:
     if k <= 0:
         raise ValueError(f"k must be positive, got k={k}")
@@ -411,6 +423,8 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
     pass1_correct = 0.0
     passk_correct = 0.0
     llm_judge_fail = 0
+    seed_correct_counts = [0.0] * k
+    seed_total_counts = [0] * k
 
     jsonl_f = None
     if output_jsonl and is_main_process():
@@ -447,26 +461,32 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
                 f"elapsed={elapsed/60:.1f} min"
             )
 
-        # need full per-response correctness
+        # compute full per-response correctness once, then derive pass@1 / pass@k / seed stats
+        if data_source in LOCAL_SOURCES:
+            scores = [compute_score(data_source=data_source, solution_str=sol, ground_truth=gt) for sol in responses]
+        else:
+            question = _get_question_from_obj(obj)
+            pred_answers = [extract_solution_inside_boxed(sol) for sol in responses]
+            scores = judge_scores_for_answers(question, gt, pred_answers, rt)
+            for ans in pred_answers[: min(k, len(pred_answers))]:
+                if not ans:
+                    continue
+                ck = _cache_key(question, gt, ans)
+                if ck in _JUDGE_PARSEFAIL_KEYS:
+                    llm_judge_fail += 1
+
+        corrects = [1 if s > 0 else 0 for s in scores]
+        num_to_use = min(k, len(corrects))
+        if num_to_use <= 0:
+            continue
+
+        pass1_correct += float(corrects[0])
+        passk_correct += 1.0 if any(corrects[:num_to_use]) else 0.0
+        for seed_idx in range(num_to_use):
+            seed_correct_counts[seed_idx] += float(corrects[seed_idx])
+            seed_total_counts[seed_idx] += 1
+
         if jsonl_f is not None:
-            if data_source in LOCAL_SOURCES:
-                scores = [compute_score(data_source=data_source, solution_str=sol, ground_truth=gt) for sol in responses]
-            else:
-                question = _get_question_from_obj(obj)
-                pred_answers = [extract_solution_inside_boxed(sol) for sol in responses]
-                scores = judge_scores_for_answers(question, gt, pred_answers, rt)
-                for ans in pred_answers:
-                    if not ans:
-                        continue
-                    ck = _cache_key(question, gt, ans)
-                    if ck in _JUDGE_PARSEFAIL_KEYS:
-                        llm_judge_fail += 1
-
-            corrects = [1 if s > 0 else 0 for s in scores]
-            pass1_correct += float(corrects[0])
-            num_to_use = min(k, len(corrects))
-            passk_correct += 1.0 if any(corrects[:num_to_use]) else 0.0
-
             jsonl_f.write(
                 json.dumps(
                     {
@@ -479,33 +499,6 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
                 + "\n"
             )
             continue
-
-        # no output_jsonl: compute pass@1 & pass@k (batch judge for non-local)
-        if data_source in LOCAL_SOURCES:
-            s1 = compute_score(data_source=data_source, solution_str=responses[0], ground_truth=gt)
-            pass1_correct += 1.0 if s1 > 0 else 0.0
-
-            any_ok = 0.0
-            for sol in responses[: min(k, len(responses))]:
-                if compute_score(data_source=data_source, solution_str=sol, ground_truth=gt) > 0:
-                    any_ok = 1.0
-                    break
-            passk_correct += any_ok
-        else:
-            question = _get_question_from_obj(obj)
-            num_to_use = min(k, len(responses))
-            pred_answers_k = [extract_solution_inside_boxed(sol) for sol in responses[:num_to_use]]
-            scores_k = judge_scores_for_answers(question, gt, pred_answers_k, rt)
-
-            for ans in pred_answers_k:
-                if not ans:
-                    continue
-                ck = _cache_key(question, gt, ans)
-                if ck in _JUDGE_PARSEFAIL_KEYS:
-                    llm_judge_fail += 1
-
-            pass1_correct += 1.0 if (scores_k[0] > 0) else 0.0
-            passk_correct += 1.0 if any(s > 0 for s in scores_k) else 0.0
 
     if jsonl_f is not None:
         jsonl_f.close()
@@ -521,11 +514,21 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
 
     pass1_acc = pass1_correct / total
     passk_acc = passk_correct / total
+    evaluation_seed_accuracies = [
+        (seed_correct_counts[i] / seed_total_counts[i])
+        for i in range(k)
+        if seed_total_counts[i] > 0
+    ]
+    evaluation_seed_stats = _compute_mean_and_std(evaluation_seed_accuracies)
 
     print(f"File: {file_path}")
     print(f"Total samples: {total}")
     print(f"Pass@1 accuracy: {pass1_acc:.4%}")
     print(f"Pass@{k} accuracy (any of first {k} responses correct): {passk_acc:.4%}")
+    print(
+        f"Evaluation-seed accuracy over first {k} responses: "
+        f"mean={evaluation_seed_stats['mean']:.4%}, std={evaluation_seed_stats['std']:.4%}"
+    )
 
     if output_path is None:
         output_path = "recipe/GARO/evaluation_results.json"
@@ -542,6 +545,14 @@ def eval_pass_at_k(file_path: str, k: int, output_path: Optional[str], output_js
             "k": k,
             "pass_at_1": {"correct": pass1_correct, "accuracy": pass1_acc},
             "pass_at_k": {"correct": passk_correct, "accuracy": passk_acc},
+            "evaluation_seed_accuracy": {
+                "num_seeds": len(evaluation_seed_accuracies),
+                "accuracies": evaluation_seed_accuracies,
+                "mean": evaluation_seed_stats["mean"],
+                "std": evaluation_seed_stats["std"],
+                "per_seed_correct": [seed_correct_counts[i] for i in range(k) if seed_total_counts[i] > 0],
+                "per_seed_total": [seed_total_counts[i] for i in range(k) if seed_total_counts[i] > 0],
+            },
         }
         if llm_judge_fail > 0:
             metrics["llm_judge_fail"] = llm_judge_fail
