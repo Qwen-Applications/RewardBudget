@@ -12,7 +12,7 @@ if [ $# -ne 3 ]; then
     exit 1
 fi
 
-TASK_LIST="math500,amc23,aime24,aime25,omni_math,minerva,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
+TASK_LIST="math500,amc23,aime24,aime25,omni_math,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp"
 MODEL="$1"
 STEP="$2"
 JOB_ID="$3"
@@ -117,10 +117,10 @@ python -m verl.trainer.main_generation_multi \
   +data.paths=${paths_arg} \
   +data.output_paths=${outs_arg} \
   data.prompt_key=prompt \
-  data.n_samples=1 \
+  data.n_samples=8 \
   model.path=${CHECKPOINT_PATH} \
   +model.trust_remote_code=True \
-  rollout.temperature=0.0 \
+  rollout.temperature=0.6 \
   rollout.top_p=1.0 \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
@@ -138,7 +138,7 @@ for idx in "${!TASKS[@]}"; do
   rclone copy ${tmp} ${OUTPUT_PATH} --progress --transfers=80
 
   python3 recipe/GARO/scripts/evaluate/evaluation.py \
-    --file ${tmp} --k 1 \
+    --file ${tmp} --k 8 \
     --output ${evalp} \
     --output_jsonl ${evalj} \
     --qwen_ip "${QWEN_IP}"
