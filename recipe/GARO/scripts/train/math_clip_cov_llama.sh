@@ -56,7 +56,7 @@ else
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.actor.optim.lr_scheduler_type=constant \
-        actor_rollout_ref.actor.optim.total_training_steps=3000 \
+        actor_rollout_ref.actor.optim.total_training_steps=1200 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.actor.checkpoint.save_contents='["model","optimizer","extra","hf_model"]' \
@@ -88,7 +88,7 @@ else
         custom_reward_function.name=compute_score \
         reward_model.reward_manager=dapo \
         +reward_model.reward_kwargs.max_resp_len=8192 \
-        algorithm.adv_estimator=grpo \
+        algorithm.adv_estimator=reward_budget_mean \
         algorithm.use_kl_in_reward=False \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.ref_sync_freq=20000000 \
@@ -97,10 +97,10 @@ else
         algorithm.filter_groups.max_num_gen_batches=10 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=GARO \
-        trainer.experiment_name=${TRAIN_DATA}_CLIPCov_Llama \
+        trainer.experiment_name=${TRAIN_DATA}_garo_CLIPCov_Llama \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-        trainer.save_freq=25 \
+        trainer.save_freq=100 \
         trainer.test_freq=5 \
         trainer.total_epochs=10 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}" \

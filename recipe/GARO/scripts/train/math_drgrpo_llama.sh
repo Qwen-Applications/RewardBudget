@@ -56,7 +56,7 @@ else
         actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.actor.optim.lr_scheduler_type=constant \
-        actor_rollout_ref.actor.optim.total_training_steps=3000 \
+        actor_rollout_ref.actor.optim.total_training_steps=1200 \
         actor_rollout_ref.actor.fsdp_config.param_offload=False \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.actor.checkpoint.save_contents='["model","optimizer","extra","hf_model"]' \
@@ -80,19 +80,19 @@ else
         custom_reward_function.path=recipe/GARO/reward.py \
         custom_reward_function.name=compute_score \
         algorithm.use_kl_in_reward=False \
-        algorithm.adv_estimator=grpo \
+        algorithm.adv_estimator=reward_budget_mean \
         algorithm.ref_sync_freq=20000000 \
         algorithm.norm_adv_by_std_in_grpo=False \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
         trainer.total_epochs=10 \
         trainer.project_name=GARO \
-        trainer.experiment_name=${TRAIN_DATA}_DRGRPO_Llama \
+        trainer.experiment_name=${TRAIN_DATA}_garo_DRGRPO_Llama \
         trainer.logger='["console","wandb"]' \
         trainer.log_val_generations=1000 \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-        trainer.save_freq=25 \
+        trainer.save_freq=100 \
         trainer.test_freq=5 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}"
     
