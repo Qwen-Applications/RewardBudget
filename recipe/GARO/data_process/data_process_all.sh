@@ -1,3 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+echo "[INFO] HF_ENDPOINT=${HF_ENDPOINT}"
+
 # 训练/验证数据集: ${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/
 TRAIN_DIR="${PRIMUS_OSS_WORKSPACE_DIR}/GARO/train_data/"
 python recipe/GARO/data_process/train_valid/dapo_math_17k.py --train_data_dir ${TRAIN_DIR} --valid_data_dir ${TRAIN_DIR} --tokenizer=Qwen/Qwen3-8B
