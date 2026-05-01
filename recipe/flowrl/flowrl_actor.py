@@ -303,8 +303,13 @@ class FlowRLActor(DataParallelPPOActor):
             )
             select_keys.append("rollout_log_probs")
 
-        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
-        non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
+        non_tensor_select_keys = []
+        if "multi_modal_inputs" in data.non_tensor_batch.keys():
+            non_tensor_select_keys.append("multi_modal_inputs")
+        if "uid" in data.non_tensor_batch.keys():
+            # Preserve prompt ids so pairwise diagnostics are computed within
+            # the same prompt/state rather than across unrelated prompts.
+            non_tensor_select_keys.append("uid")
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
@@ -374,6 +379,7 @@ class FlowRLActor(DataParallelPPOActor):
                             response_mask=response_mask,
                             clip_ratio=self.config.clip_ratio,
                             rollout_log_probs=rollout_log_probs,
+                            uid=model_inputs.get("uid", None),
                         )
                     else:
                         # Default: CISPO with hard mask + clip
@@ -386,6 +392,7 @@ class FlowRLActor(DataParallelPPOActor):
                             response_mask=response_mask,
                             clip_ratio=self.config.clip_ratio,
                             rollout_log_probs=rollout_log_probs,
+                            uid=model_inputs.get("uid", None),
                         )
 
                     # if entropy_coeff != 0:
@@ -438,6 +445,86 @@ class FlowRLActor(DataParallelPPOActor):
         self.actor_optimizer.zero_grad()
         return metrics
 
+    def _compute_kappa_eff_metrics(
+        self,
+        log_prob: torch.Tensor,
+        old_log_prob: torch.Tensor,
+        reward: torch.Tensor,
+        response_mask: torch.Tensor,
+        imp_w: torch.Tensor | None = None,
+        uid=None,
+    ) -> dict[str, float]:
+        """Compute effective kappa from per-prompt best/worst advantage pairs.
+
+        For a full response/action a, log pi(a|s) - log rho(a|s) is the sum
+        of token log-ratios over valid response tokens.  We estimate the
+        pairwise sharpness induced by the update as
+
+            [log pi(a+|s)-log rho(a+|s)] - [log pi(a-|s)-log rho(a-|s)],
+
+        where a+ and a- are the max- and min-advantage responses sampled for
+        the same prompt/state s.  The primary `actor/kappa_eff` follows the
+        lemma and uses the raw sequence log-ratio.  When `imp_w` is provided,
+        `actor/kappa_eff_clipped` is also logged from the same clipped sequence
+        importance weights as the loss.
+        """
+        with torch.no_grad():
+            seq_adv = verl_F.masked_mean(reward, response_mask, axis=1).detach().float()
+            seq_log_ratio_raw = verl_F.masked_sum(log_prob - old_log_prob, response_mask, axis=1).detach().float()
+
+            if imp_w is None:
+                seq_log_ratio = seq_log_ratio_raw
+            else:
+                seq_log_ratio = torch.log(imp_w.detach().float().clamp_min(1e-12))
+
+            kappa_vals = []
+            kappa_clipped_vals = []
+            adv_gaps = []
+
+            def add_pair(idxs: torch.Tensor) -> None:
+                group_adv = seq_adv[idxs]
+                if group_adv.numel() < 2:
+                    return
+                pos = torch.argmax(group_adv)
+                neg = torch.argmin(group_adv)
+                adv_gap = group_adv[pos] - group_adv[neg]
+                if adv_gap <= 0:
+                    return
+                kappa_vals.append(seq_log_ratio_raw[idxs][pos] - seq_log_ratio_raw[idxs][neg])
+                kappa_clipped_vals.append(seq_log_ratio[idxs][pos] - seq_log_ratio[idxs][neg])
+                adv_gaps.append(adv_gap)
+
+            if uid is not None and len(uid) == seq_adv.shape[0]:
+                prompt_to_indices = {}
+                for i, prompt_uid in enumerate(uid):
+                    prompt_to_indices.setdefault(prompt_uid, []).append(i)
+                for indices in prompt_to_indices.values():
+                    add_pair(torch.tensor(indices, device=seq_adv.device, dtype=torch.long))
+            elif seq_adv.numel() >= 2:
+                add_pair(torch.arange(seq_adv.shape[0], device=seq_adv.device))
+
+            if len(kappa_vals) == 0:
+                return {
+                    "actor/kappa_eff": 0.0,
+                    "actor/kappa_eff_clipped": 0.0,
+                    "actor/kappa_eff_adv_gap": 0.0,
+                    "actor/tau_eff": 0.0,
+                    "actor/kappa_eff_pair_count": 0.0,
+                }
+
+            kappa_eff = torch.stack(kappa_vals).mean()
+            kappa_eff_clipped = torch.stack(kappa_clipped_vals).mean()
+            adv_gap = torch.stack(adv_gaps).mean()
+            tau_eff = adv_gap / kappa_eff if kappa_eff.abs() > 1e-12 else adv_gap.new_tensor(0.0)
+
+            return {
+                "actor/kappa_eff": kappa_eff.detach().item(),
+                "actor/kappa_eff_clipped": kappa_eff_clipped.detach().item(),
+                "actor/kappa_eff_adv_gap": adv_gap.detach().item(),
+                "actor/tau_eff": tau_eff.detach().item(),
+                "actor/kappa_eff_pair_count": float(len(kappa_vals)),
+            }
+
     def compute_flowrl_cispo_clip(
         self,
         log_prob=None,
@@ -448,6 +535,7 @@ class FlowRLActor(DataParallelPPOActor):
         response_mask=None,
         clip_ratio=None,
         rollout_log_probs=None,
+        uid=None,
     ):
         log_ratio = log_prob - old_log_prob  # (B, T)
         ratio = torch.exp(log_ratio)  # (B, T)
@@ -513,6 +601,16 @@ class FlowRLActor(DataParallelPPOActor):
             "actor/condition_1_count": (condition_1 * response_mask).sum().detach().item(),  # cispo
             "actor/condition_2_count": (condition_2 * response_mask).sum().detach().item(),  # cispo
         }
+        loss_term_dict.update(
+            self._compute_kappa_eff_metrics(
+                log_prob=log_prob,
+                old_log_prob=old_log_prob,
+                reward=reward,
+                response_mask=response_mask,
+                imp_w=imp_w,
+                uid=uid,
+            )
+        )
 
         return avg_loss, loss_term_dict
 
@@ -526,6 +624,7 @@ class FlowRLActor(DataParallelPPOActor):
         response_mask=None,
         clip_ratio=None,
         rollout_log_probs=None,
+        uid=None,
     ):
         """
         Ablation study: Remove hard CISPO mask, only use importance weight clipping.
@@ -603,5 +702,15 @@ class FlowRLActor(DataParallelPPOActor):
             "actor/clipped_low_count": clipped_low.detach().item(),
             "actor/clipped_high_count": clipped_high.detach().item(),
         }
+        loss_term_dict.update(
+            self._compute_kappa_eff_metrics(
+                log_prob=log_prob,
+                old_log_prob=old_log_prob,
+                reward=reward,
+                response_mask=response_mask,
+                imp_w=imp_w,
+                uid=uid,
+            )
+        )
 
         return avg_loss, loss_term_dict
