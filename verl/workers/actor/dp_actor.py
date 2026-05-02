@@ -48,6 +48,74 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _to_python_uid(uid):
+    if isinstance(uid, bytes):
+        return uid.decode("utf-8", errors="replace")
+    return uid.item() if hasattr(uid, "item") else uid
+
+
+def _compute_kappa_eff_metrics_from_sequences(
+    seq_adv: torch.Tensor,
+    seq_log_ratio_raw: torch.Tensor,
+    seq_log_ratio_clipped: torch.Tensor,
+    uid,
+) -> dict[str, float]:
+    """Compute per-prompt effective kappa from best/worst advantage pairs.
+
+    The raw kappa is the sequence-level current-vs-old log-ratio gap between
+    the highest-advantage and lowest-advantage responses for the same prompt.
+    The clipped variant uses the same PPO-clipped token ratios as the actor loss.
+    """
+    with torch.no_grad():
+        seq_adv = seq_adv.detach().float().cpu()
+        seq_log_ratio_raw = seq_log_ratio_raw.detach().float().cpu()
+        seq_log_ratio_clipped = seq_log_ratio_clipped.detach().float().cpu()
+
+        prompt_to_indices = {}
+        for i, prompt_uid in enumerate(uid):
+            prompt_to_indices.setdefault(_to_python_uid(prompt_uid), []).append(i)
+
+        kappa_vals = []
+        kappa_clipped_vals = []
+        adv_gaps = []
+
+        for indices in prompt_to_indices.values():
+            if len(indices) < 2:
+                continue
+            idxs = torch.tensor(indices, dtype=torch.long)
+            group_adv = seq_adv[idxs]
+            pos = torch.argmax(group_adv)
+            neg = torch.argmin(group_adv)
+            adv_gap = group_adv[pos] - group_adv[neg]
+            if adv_gap <= 0:
+                continue
+            kappa_vals.append(seq_log_ratio_raw[idxs][pos] - seq_log_ratio_raw[idxs][neg])
+            kappa_clipped_vals.append(seq_log_ratio_clipped[idxs][pos] - seq_log_ratio_clipped[idxs][neg])
+            adv_gaps.append(adv_gap)
+
+        if len(kappa_vals) == 0:
+            return {
+                "actor/kappa_eff": 0.0,
+                "actor/kappa_eff_clipped": 0.0,
+                "actor/kappa_eff_adv_gap": 0.0,
+                "actor/tau_eff": 0.0,
+                "actor/kappa_eff_pair_count": 0.0,
+            }
+
+        kappa_eff = torch.stack(kappa_vals).mean()
+        kappa_eff_clipped = torch.stack(kappa_clipped_vals).mean()
+        adv_gap = torch.stack(adv_gaps).mean()
+        tau_eff = adv_gap / kappa_eff if kappa_eff.abs() > 1e-12 else adv_gap.new_tensor(0.0)
+
+        return {
+            "actor/kappa_eff": kappa_eff.item(),
+            "actor/kappa_eff_clipped": kappa_eff_clipped.item(),
+            "actor/kappa_eff_adv_gap": adv_gap.item(),
+            "actor/tau_eff": tau_eff.item(),
+            "actor/kappa_eff_pair_count": float(len(kappa_vals)),
+        }
+
+
 class DataParallelPPOActor(BasePPOActor):
     """FSDP DataParallel PPO Actor or Ref worker
 
@@ -370,6 +438,73 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_probs, entropys
 
+    def _compute_kappa_eff_metrics_for_batch(
+        self, data: DataProto, group_id_key: str | None, temperature: float
+    ) -> dict[str, float]:
+        if group_id_key is None or group_id_key not in data.non_tensor_batch:
+            return {}
+
+        was_training = self.actor_module.training
+        self.actor_module.eval()
+
+        if self.config.use_dynamic_bsz:
+            max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+            micro_batches, _ = prepare_dynamic_batch(data, max_token_len=max_token_len)
+        else:
+            micro_batches = data.split(self.config.ppo_micro_batch_size_per_gpu)
+
+        clip_ratio = self.config.clip_ratio
+        clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
+        clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
+
+        kappa_seq_adv = []
+        kappa_seq_log_ratio_raw = []
+        kappa_seq_log_ratio_clipped = []
+        kappa_uid = []
+
+        with torch.no_grad():
+            for micro_batch in micro_batches:
+                micro_batch = micro_batch.to(get_device_id())
+                model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+                response_mask = model_inputs["response_mask"]
+                old_log_prob = model_inputs["old_log_probs"]
+                advantages = model_inputs["advantages"]
+
+                _, log_prob = self._forward_micro_batch(
+                    model_inputs, temperature=temperature, calculate_entropy=False
+                )
+
+                valid_len = response_mask.sum(dim=-1).clamp_min(1.0)
+                seq_adv = (advantages.detach().float() * response_mask).sum(dim=-1) / valid_len
+                token_log_ratio = torch.clamp(
+                    log_prob.detach().float() - old_log_prob.detach().float(), -20.0, 20.0
+                )
+                seq_log_ratio_raw = (token_log_ratio * response_mask).sum(dim=-1)
+                token_ratio_clipped = torch.exp(token_log_ratio).clamp(
+                    1.0 - clip_ratio_low, 1.0 + clip_ratio_high
+                )
+                seq_log_ratio_clipped = (
+                    torch.log(token_ratio_clipped.clamp_min(1e-12)) * response_mask
+                ).sum(dim=-1)
+
+                kappa_seq_adv.append(seq_adv.cpu())
+                kappa_seq_log_ratio_raw.append(seq_log_ratio_raw.cpu())
+                kappa_seq_log_ratio_clipped.append(seq_log_ratio_clipped.cpu())
+                kappa_uid.extend(list(model_inputs[group_id_key]))
+
+        if was_training:
+            self.actor_module.train()
+
+        if not kappa_seq_adv or not kappa_uid:
+            return {}
+
+        return _compute_kappa_eff_metrics_from_sequences(
+            seq_adv=torch.cat(kappa_seq_adv, dim=0),
+            seq_log_ratio_raw=torch.cat(kappa_seq_log_ratio_raw, dim=0),
+            seq_log_ratio_clipped=torch.cat(kappa_seq_log_ratio_clipped, dim=0),
+            uid=kappa_uid,
+        )
+
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
@@ -407,13 +542,15 @@ class DataParallelPPOActor(BasePPOActor):
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
-        # new-changes: keep group id (uid / index) for adaptive beta
-        if adaptive_beta_enable:
-            if "uid" in data.non_tensor_batch.keys():
-                non_tensor_select_keys.append("uid")
-            elif "index" in data.non_tensor_batch.keys():
-                non_tensor_select_keys.append("index")
-        # end new-changes
+        # Keep group id so adaptive beta and kappa_eff metrics can compare
+        # multiple sampled responses from the same prompt.
+        group_id_key = None
+        if "uid" in data.non_tensor_batch.keys():
+            group_id_key = "uid"
+        elif "index" in data.non_tensor_batch.keys():
+            group_id_key = "index"
+        if group_id_key is not None and group_id_key not in non_tensor_select_keys:
+            non_tensor_select_keys.append(group_id_key)
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
@@ -584,5 +721,12 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
+
+        kappa_metrics = self._compute_kappa_eff_metrics_for_batch(
+            data=data, group_id_key=group_id_key, temperature=temperature
+        )
+        if kappa_metrics:
+            append_to_dict(metrics, kappa_metrics)
+
         self.actor_optimizer.zero_grad()
         return metrics
