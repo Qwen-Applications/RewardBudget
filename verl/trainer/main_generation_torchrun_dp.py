@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 from pprint import pprint
@@ -254,6 +255,14 @@ def _generation_backend(config: DictConfig) -> str:
 
 
 def _prepare_rank_local_vllm_environment(config: DictConfig, *, local_rank: int) -> None:
+    """Make each torchrun rank look like an independent 1-GPU vLLM job.
+
+    vLLM still initializes a torch.distributed process group internally, even
+    for a single visible GPU.  If the torchrun/cluster MASTER_ADDR and
+    MASTER_PORT leak into the vLLM EngineCore subprocess, vLLM can try to
+    rendezvous with an unrelated host and hang in TCPStore.  Therefore the
+    rank-local vLLM process gets a private loopback rendezvous endpoint.
+    """
     if not bool(config.rollout.get("isolate_cuda_visible_devices", True)):
         return
 
@@ -274,7 +283,21 @@ def _prepare_rank_local_vllm_environment(config: DictConfig, *, local_rank: int)
     os.environ["LOCAL_RANK"] = "0"
     os.environ["RANK"] = "0"
     os.environ["WORLD_SIZE"] = "1"
+    os.environ["LOCAL_WORLD_SIZE"] = "1"
+    os.environ["MASTER_ADDR"] = str(config.rollout.get("rank_local_master_addr", "127.0.0.1"))
+    os.environ["MASTER_PORT"] = str(
+        config.rollout.get("rank_local_master_port", _find_free_loopback_port())
+    )
+    # vLLM uses this env var in some versions when choosing the host IP for
+    # distributed init.  Pin it to loopback for the isolated rank-local engine.
+    os.environ["VLLM_HOST_IP"] = os.environ["MASTER_ADDR"]
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+
+def _find_free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _torch_dtype(dtype: Any) -> Any:
@@ -477,6 +500,11 @@ def _init_vllm_engine(config: DictConfig, *, model_path: str, trust_remote_code:
         "trust_remote_code": trust_remote_code,
         "dtype": _vllm_dtype(config.rollout.get("dtype", "auto")),
         "tensor_parallel_size": tensor_parallel_size,
+        # Force a rank-local single-worker executor.  Do not let vLLM reuse
+        # torchrun's global rendezvous endpoint.
+        "distributed_executor_backend": str(config.rollout.get("distributed_executor_backend", "uni")),
+        "master_addr": str(config.rollout.get("master_addr", os.environ.get("MASTER_ADDR", "127.0.0.1"))),
+        "master_port": int(config.rollout.get("master_port", os.environ.get("MASTER_PORT", "29501"))),
         "gpu_memory_utilization": float(config.rollout.get("gpu_memory_utilization", 0.8)),
         "max_model_len": int(max_model_len),
         "max_num_batched_tokens": int(config.rollout.get("max_num_batched_tokens", 8192)),
