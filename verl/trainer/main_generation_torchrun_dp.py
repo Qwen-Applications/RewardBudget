@@ -13,11 +13,12 @@
 # limitations under the License.
 """Single-node torchrun data-parallel generation entrypoint.
 
-This file intentionally does not use Ray, tensor parallelism, model parallelism, or
-NCCL collectives.  Launch it with torchrun; each local rank loads a complete HF
-model copy on its own GPU, processes a round-robin shard of prompts, writes a
-rank-local shard file, and rank 0 merges shard files by polling the shared file
-system.
+This file intentionally does not use Ray or model parallelism.  Launch it with
+torchrun; each local rank loads a complete generation engine copy on its own GPU,
+processes a round-robin shard of prompts, writes a rank-local shard file, and
+rank 0 merges shard files by polling the shared file system.  By default it keeps
+the historical HuggingFace Transformers backend.  Set ``+rollout.backend=vllm``
+to use a rank-local vLLM offline engine for higher-throughput generation.
 
 Example:
     torchrun --standalone --nproc_per_node=8 -m verl.trainer.main_generation_torchrun_dp \
@@ -37,6 +38,7 @@ import time
 from pathlib import Path
 from pprint import pprint
 from typing import Any
+import inspect
 
 import hydra
 import pandas as pd
@@ -61,16 +63,23 @@ def main(config: DictConfig) -> None:
 
 
 def run_generation_torchrun_dp(config: DictConfig) -> None:
-    """Run shard-local HF generation under torchrun on a single node."""
+    """Run shard-local generation under torchrun on a single node."""
     rank, world_size, local_rank = _torchrun_ranks()
-    _init_gloo_process_group(rank=rank, world_size=world_size)
+    backend = _generation_backend(config)
+    if backend == "vllm":
+        # vLLM's offline engine otherwise tends to pick cuda:0 in every torchrun
+        # process.  Restricting visible devices before CUDA is initialized makes
+        # each torchrun rank behave like an independent single-GPU vLLM process.
+        _prepare_rank_local_vllm_environment(config, local_rank=local_rank)
+    else:
+        _init_gloo_process_group(rank=rank, world_size=world_size)
 
     try:
         if rank == 0:
             pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
 
-        device = _select_device(local_rank)
+        device = _select_device(0 if backend == "vllm" else local_rank)
         data_path = str(config.data.path)
         output_path = str(config.data.output_path)
         shard_dir = _build_shard_dir(output_path, world_size=world_size)
@@ -108,13 +117,18 @@ def run_generation_torchrun_dp(config: DictConfig) -> None:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=_torch_dtype(config.rollout.get("dtype", "auto")),
-            trust_remote_code=trust_remote_code,
-        )
-        model.to(device)
-        model.eval()
+        model = None
+        llm = None
+        if backend == "vllm":
+            llm = _init_vllm_engine(config, model_path=model_path, trust_remote_code=trust_remote_code)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=_torch_dtype(config.rollout.get("dtype", "auto")),
+                trust_remote_code=trust_remote_code,
+            )
+            model.to(device)
+            model.eval()
 
         if float(config.rollout.temperature) == 0.0 and int(config.data.n_samples) != 1:
             raise ValueError("When rollout.temperature=0, data.n_samples must be 1.")
@@ -143,17 +157,29 @@ def run_generation_torchrun_dp(config: DictConfig) -> None:
             _write_rank_shard(shard_dir, rank=rank, rows=local_results)
             print(f"[rank {rank}/{world_size}] reused shard with {len(local_results)} rows", flush=True)
         else:
-            local_results = _generate_local_results(
-                local_positions=local_positions,
-                local_chats=local_chats,
-                tokenizer=tokenizer,
-                model=model,
-                device=device,
-                config=config,
-                existing_responses_by_position=existing_responses,
-                shard_dir=shard_dir,
-                rank=rank,
-            )
+            if backend == "vllm":
+                local_results = _generate_local_results_vllm(
+                    local_positions=local_positions,
+                    local_chats=local_chats,
+                    tokenizer=tokenizer,
+                    llm=llm,
+                    config=config,
+                    existing_responses_by_position=existing_responses,
+                    shard_dir=shard_dir,
+                    rank=rank,
+                )
+            else:
+                local_results = _generate_local_results_hf(
+                    local_positions=local_positions,
+                    local_chats=local_chats,
+                    tokenizer=tokenizer,
+                    model=model,
+                    device=device,
+                    config=config,
+                    existing_responses_by_position=existing_responses,
+                    shard_dir=shard_dir,
+                    rank=rank,
+                )
             _write_rank_shard(shard_dir, rank=rank, rows=local_results)
             print(f"[rank {rank}/{world_size}] wrote shard with {len(local_results)} rows", flush=True)
 
@@ -212,6 +238,45 @@ def _normalize_chat(chat: Any) -> Any:
     return chat
 
 
+def _generation_backend(config: DictConfig) -> str:
+    # Keep backward compatibility: main_generation_torchrun_dp historically
+    # ignored rollout.name (which is often "vllm" in the shared generation
+    # config) and used HF.  Only switch backend when explicitly requested.
+    backend = config.rollout.get("backend", None)
+    if backend is None:
+        return "hf"
+    backend_name = str(backend).lower()
+    aliases = {"transformers": "hf", "huggingface": "hf"}
+    backend_name = aliases.get(backend_name, backend_name)
+    if backend_name not in {"hf", "vllm"}:
+        raise ValueError(f"Unsupported rollout.backend={backend!r}; expected 'hf' or 'vllm'.")
+    return backend_name
+
+
+def _prepare_rank_local_vllm_environment(config: DictConfig, *, local_rank: int) -> None:
+    if not bool(config.rollout.get("isolate_cuda_visible_devices", True)):
+        return
+
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible_devices:
+        devices = [device.strip() for device in visible_devices.split(",") if device.strip()]
+        if local_rank >= len(devices):
+            raise RuntimeError(
+                f"LOCAL_RANK={local_rank} is outside CUDA_VISIBLE_DEVICES={visible_devices!r}."
+            )
+        selected_device = devices[local_rank]
+    else:
+        selected_device = str(local_rank)
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = selected_device
+    # vLLM is run as an independent single-GPU offline engine inside each
+    # torchrun process, so hide torchrun's global rank metadata from vLLM.
+    os.environ["LOCAL_RANK"] = "0"
+    os.environ["RANK"] = "0"
+    os.environ["WORLD_SIZE"] = "1"
+    os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+
 def _torch_dtype(dtype: Any) -> Any:
     if dtype is None:
         return "auto"
@@ -231,6 +296,26 @@ def _torch_dtype(dtype: Any) -> Any:
     }
     if dtype_name not in mapping:
         raise ValueError(f"Unsupported rollout.dtype for HF torchrun generation: {dtype!r}")
+    return mapping[dtype_name]
+
+
+def _vllm_dtype(dtype: Any) -> str:
+    if dtype is None:
+        return "auto"
+    dtype_name = str(dtype).lower()
+    mapping = {
+        "auto": "auto",
+        "none": "auto",
+        "bf16": "bfloat16",
+        "bfloat16": "bfloat16",
+        "fp16": "float16",
+        "float16": "float16",
+        "half": "float16",
+        "fp32": "float32",
+        "float32": "float32",
+    }
+    if dtype_name not in mapping:
+        raise ValueError(f"Unsupported rollout.dtype for vLLM torchrun generation: {dtype!r}")
     return mapping[dtype_name]
 
 
@@ -276,7 +361,7 @@ def _generation_kwargs(config: DictConfig, tokenizer: Any) -> dict[str, Any]:
     return kwargs
 
 
-def _generate_local_results(
+def _generate_local_results_hf(
     *,
     local_positions: list[int],
     local_chats: list[Any],
@@ -350,6 +435,249 @@ def _generate_local_results(
                         rank=rank,
                         row={"row_position": row_position, "responses": row_responses},
                     )
+
+    incomplete = [
+        row_position
+        for row_position in local_positions
+        if len(responses_by_position.get(row_position, [])) < n_samples
+    ]
+    if incomplete:
+        preview = incomplete[:20]
+        raise RuntimeError(f"Incomplete generated rows: {preview} (total_incomplete={len(incomplete)})")
+
+    return [
+        {"row_position": row_position, "responses": responses_by_position[row_position][:n_samples]}
+        for row_position in local_positions
+    ]
+
+
+def _init_vllm_engine(config: DictConfig, *, model_path: str, trust_remote_code: bool) -> Any:
+    tensor_parallel_size = int(config.rollout.get("tensor_model_parallel_size", 1))
+    if tensor_parallel_size != 1:
+        raise ValueError(
+            "main_generation_torchrun_dp uses torchrun data parallelism with one rank-local "
+            "vLLM engine per GPU. Set rollout.tensor_model_parallel_size=1, or use verl's "
+            "Ray/vLLM rollout path for tensor-parallel generation."
+        )
+
+    try:
+        from vllm import LLM
+    except ImportError as exc:
+        raise ImportError(
+            "rollout.backend=vllm requires vLLM to be installed in the runtime environment."
+        ) from exc
+
+    max_model_len = config.rollout.get("max_model_len", None)
+    if max_model_len is None:
+        max_model_len = int(config.rollout.prompt_length) + int(config.rollout.response_length)
+
+    engine_kwargs: dict[str, Any] = {
+        "model": model_path,
+        "tokenizer": model_path,
+        "trust_remote_code": trust_remote_code,
+        "dtype": _vllm_dtype(config.rollout.get("dtype", "auto")),
+        "tensor_parallel_size": tensor_parallel_size,
+        "gpu_memory_utilization": float(config.rollout.get("gpu_memory_utilization", 0.8)),
+        "max_model_len": int(max_model_len),
+        "max_num_batched_tokens": int(config.rollout.get("max_num_batched_tokens", 8192)),
+        "max_num_seqs": int(config.rollout.get("max_num_seqs", 1024)),
+        "enforce_eager": bool(config.rollout.get("enforce_eager", True)),
+        "load_format": str(config.rollout.get("load_format", "auto")),
+        "disable_log_stats": bool(config.rollout.get("disable_log_stats", True)),
+        "enable_chunked_prefill": bool(config.rollout.get("enable_chunked_prefill", True)),
+    }
+
+    optional_engine_keys = (
+        "enable_prefix_caching",
+        "seed",
+    )
+    for key in optional_engine_keys:
+        value = config.rollout.get(key, None)
+        if value is not None:
+            engine_kwargs[key] = value
+
+    engine_kwargs_config = config.rollout.get("engine_kwargs", None)
+    if engine_kwargs_config:
+        engine_kwargs.update(_dict_config_to_plain_dict(engine_kwargs_config.get("vllm", {}) or {}))
+    engine_kwargs = _filter_kwargs_for_callable(LLM, engine_kwargs)
+    return LLM(**engine_kwargs)
+
+
+def _filter_kwargs_for_callable(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return kwargs
+
+    parameters = signature.parameters
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in parameters}
+
+
+def _dict_config_to_plain_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, DictConfig):
+        return dict(OmegaConf.to_container(value, resolve=True))
+    return dict(value)
+
+
+def _vllm_sampling_params(config: DictConfig, *, n: int) -> Any:
+    from vllm import SamplingParams
+
+    temperature = float(config.rollout.temperature)
+    sampling_kwargs: dict[str, Any] = {
+        "n": int(n),
+        "max_tokens": int(config.rollout.response_length),
+        "temperature": temperature,
+        "ignore_eos": bool(config.rollout.get("ignore_eos", False)),
+        "detokenize": True,
+        "skip_special_tokens": bool(config.rollout.get("skip_special_tokens", True)),
+    }
+
+    top_p = config.rollout.get("top_p", None)
+    if top_p is not None:
+        sampling_kwargs["top_p"] = float(top_p)
+
+    top_k = config.rollout.get("top_k", None)
+    if top_k is not None:
+        top_k_int = int(top_k)
+        sampling_kwargs["top_k"] = top_k_int if top_k_int > 0 else -1
+
+    optional_sampling_keys = (
+        "min_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+        "stop",
+        "stop_token_ids",
+        "include_stop_str_in_output",
+        "spaces_between_special_tokens",
+        "seed",
+    )
+    for key in optional_sampling_keys:
+        value = config.rollout.get(key, None)
+        if value is not None:
+            sampling_kwargs[key] = value
+
+    sampling_kwargs = _filter_kwargs_for_callable(SamplingParams, sampling_kwargs)
+    return SamplingParams(**sampling_kwargs)
+
+
+def _apply_chat_template_to_prompt_ids(
+    *,
+    tokenizer: Any,
+    chats: list[Any],
+    config: DictConfig,
+) -> list[list[int]]:
+    apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
+    prompt_ids = tokenizer.apply_chat_template(
+        chats,
+        add_generation_prompt=True,
+        truncation=True,
+        max_length=int(config.rollout.prompt_length),
+        tokenize=True,
+        **apply_chat_template_kwargs,
+    )
+    if hasattr(prompt_ids, "tolist"):
+        prompt_ids = prompt_ids.tolist()
+    if prompt_ids and isinstance(prompt_ids[0], int):
+        prompt_ids = [prompt_ids]
+    return [list(map(int, ids)) for ids in prompt_ids]
+
+
+def _completion_text(tokenizer: Any, completion: Any) -> str:
+    text = getattr(completion, "text", None)
+    if text is not None:
+        return text
+    token_ids = getattr(completion, "token_ids", [])
+    return tokenizer.decode(token_ids, skip_special_tokens=True)
+
+
+def _generate_local_results_vllm(
+    *,
+    local_positions: list[int],
+    local_chats: list[Any],
+    tokenizer: Any,
+    llm: Any,
+    config: DictConfig,
+    existing_responses_by_position: dict[int, list[str]] | None,
+    shard_dir: Path,
+    rank: int,
+) -> list[dict[str, Any]]:
+    if not local_positions:
+        return []
+
+    batch_size = int(config.data.batch_size)
+    n_samples = int(config.data.n_samples)
+    responses_by_position: dict[int, list[str]] = {
+        row_position: list(responses[:n_samples])
+        for row_position, responses in (existing_responses_by_position or {}).items()
+    }
+    pending_items = [
+        (row_position, chat)
+        for row_position, chat in zip(local_positions, local_chats, strict=True)
+        if len(responses_by_position.get(row_position, [])) < n_samples
+    ]
+    num_batches = -(-len(pending_items) // batch_size)
+
+    sampling_params_cache: dict[int, Any] = {}
+    for batch_idx in range(num_batches):
+        start = batch_idx * batch_size
+        end = min((batch_idx + 1) * batch_size, len(pending_items))
+        batch_items = pending_items[start:end]
+        print(f"[local vLLM batch {batch_idx + 1}/{num_batches}] processing {len(batch_items)} prompts", flush=True)
+
+        # Resumed shards may leave different numbers of missing samples per row.
+        # Group by missing count so vLLM can still use n>1 for the common fresh-run case.
+        missing_counts = sorted(
+            {
+                n_samples - len(responses_by_position.get(row_position, []))
+                for row_position, _ in batch_items
+            },
+            reverse=True,
+        )
+        for missing_count in missing_counts:
+            group_items = [
+                (row_position, chat)
+                for row_position, chat in batch_items
+                if n_samples - len(responses_by_position.get(row_position, [])) == missing_count
+            ]
+            if not group_items:
+                continue
+
+            group_positions = [row_position for row_position, _ in group_items]
+            group_chats = [chat for _, chat in group_items]
+            prompt_token_ids = _apply_chat_template_to_prompt_ids(
+                tokenizer=tokenizer,
+                chats=group_chats,
+                config=config,
+            )
+            vllm_inputs = [{"prompt_token_ids": ids} for ids in prompt_token_ids]
+            if missing_count not in sampling_params_cache:
+                sampling_params_cache[missing_count] = _vllm_sampling_params(config, n=missing_count)
+
+            outputs = llm.generate(
+                prompts=vllm_inputs,
+                sampling_params=sampling_params_cache[missing_count],
+                use_tqdm=False,
+            )
+            for row_position, output in zip(group_positions, outputs, strict=True):
+                completions = list(output.outputs)[:missing_count]
+                if len(completions) < missing_count:
+                    raise RuntimeError(
+                        f"vLLM returned {len(completions)} completions for row_position={row_position}; "
+                        f"expected {missing_count}."
+                    )
+                row_responses = responses_by_position.setdefault(row_position, [])
+                for completion in completions:
+                    row_responses.append(_completion_text(tokenizer, completion))
+                _append_rank_shard_row(
+                    shard_dir,
+                    rank=rank,
+                    row={"row_position": row_position, "responses": row_responses},
+                )
 
     incomplete = [
         row_position

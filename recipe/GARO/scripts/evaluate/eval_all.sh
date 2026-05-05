@@ -44,11 +44,22 @@ CHECKPOINT_PATH="${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
 mkdir -p "${OUTPUT_PATH}"
 mkdir -p "${TMP_DIR}"
 
+export NNODES=${NNODES:-1}
+export NUM_ACCELERATORS=${NUM_ACCELERATORS:-8}
+export GENERATION_BACKEND=${GENERATION_BACKEND:-vllm}
+export VLLM_DTYPE=${VLLM_DTYPE:-bfloat16}
+export VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.8}
+export VLLM_MAX_NUM_BATCHED_TOKENS=${VLLM_MAX_NUM_BATCHED_TOKENS:-8192}
+export VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-1024}
+export VLLM_TENSOR_MODEL_PARALLEL_SIZE=${VLLM_TENSOR_MODEL_PARALLEL_SIZE:-1}
+export VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-True}
+export VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-True}
+
 echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL, step: $STEP, job: $JOB_ID"
 echo "[INFO] Data path(s): ${DATA_PATHS[*]}"
 echo "[INFO] Checkpoint path: ${CHECKPOINT_PATH}"
 echo "[INFO] Output path: ${OUTPUT_PATH}"
-
+echo "[INFO] Generation backend: ${GENERATION_BACKEND}"
 # =========================
 # print first row for debug (first task only)
 python - <<PY
@@ -73,11 +84,6 @@ else:
     print("[DEBUG] First row prompt value:", row.get("prompt"))
 PY
 # =========================
-
-export NNODES=1
-export NUM_ACCELERATORS=8
-# export CUDA_VISIBLE_DEVICES=$(seq -s , 0 $((NUM_ACCELERATORS-1)))
-# export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
@@ -160,7 +166,18 @@ run_generation_for_k() {
       model.path="${CHECKPOINT_PATH}" \
       +data.trust_remote_code=True \
       rollout.temperature=${temperature} \
+      +rollout.backend=${GENERATION_BACKEND} \
+      rollout.name=${GENERATION_BACKEND} \
+      rollout.dtype=${VLLM_DTYPE} \
+      rollout.gpu_memory_utilization=${VLLM_GPU_MEMORY_UTILIZATION} \
+      rollout.tensor_model_parallel_size=${VLLM_TENSOR_MODEL_PARALLEL_SIZE} \
+      rollout.max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS} \
+      rollout.max_num_seqs=${VLLM_MAX_NUM_SEQS} \
+      rollout.enforce_eager=${VLLM_ENFORCE_EAGER} \
+      rollout.enable_chunked_prefill=${VLLM_ENABLE_CHUNKED_PREFILL} \
+      +rollout.isolate_cuda_visible_devices=True \
       rollout.top_p=1.0 \
+      rollout.top_k=-1 \
       rollout.prompt_length=1024 \
       rollout.response_length=8192 \
       rollout.mode=sync
