@@ -130,6 +130,24 @@ python -m verl.trainer.main_generation_multi \
   rollout.tensor_model_parallel_size=1 \
   rollout.mode=sync
 
+python -m verl.trainer.main_generation_multi \
+  trainer.nnodes=${NNODES} \
+  trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
+  +data.paths=${paths_arg} \
+  +data.output_paths=${outs_arg} \
+  data.prompt_key=prompt \
+  data.n_samples=1 \
+  model.path=${CHECKPOINT_PATH} \
+  +model.trust_remote_code=True \
+  rollout.temperature=0.0 \
+  rollout.top_p=1.0 \
+  rollout.prompt_length=1024 \
+  rollout.response_length=8192 \
+  rollout.data_parallel_size=1 \
+  rollout.pipeline_model_parallel_size=1 \
+  rollout.tensor_model_parallel_size=1 \
+  rollout.mode=sync
+
 echo "[INFO] Output parquet path(s): ${OUTPUT_PARQUET_PATHS[*]}"
 
 wait_for_file_ready() {
@@ -190,6 +208,12 @@ for idx in "${!TASKS[@]}"; do
 
   python3 recipe/GARO/scripts/evaluate/evaluation.py \
     --file ${out_parquet} --k 8 \
+    --output ${evalp} \
+    --output_jsonl ${evalj} \
+    --qwen_ip "${QWEN_IP}"
+  
+    python3 recipe/GARO/scripts/evaluate/evaluation.py \
+    --file ${out_parquet} --k 1 \
     --output ${evalp} \
     --output_jsonl ${evalj} \
     --qwen_ip "${QWEN_IP}"
