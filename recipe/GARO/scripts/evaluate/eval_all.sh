@@ -75,7 +75,7 @@ PY
 # =========================
 
 export NNODES=1
-export NUM_ACCELERATORS=16
+export NUM_ACCELERATORS=8
 # export CUDA_VISIBLE_DEVICES=$(seq -s , 0 $((NUM_ACCELERATORS-1)))
 # export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
