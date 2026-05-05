@@ -82,7 +82,7 @@ else
         actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
         actor_rollout_ref.rollout.val_kwargs.n=1 \
         actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-        algorithm.adv_estimator=reward_budget_mean \
+        algorithm.adv_estimator=grpo \
         algorithm.use_kl_in_reward=False \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.ref_sync_freq=20000000 \
@@ -95,7 +95,7 @@ else
         +reward_model.reward_kwargs.max_resp_len=8192 \
         trainer.logger='["console","wandb"]' \
         trainer.project_name=GARO \
-        trainer.experiment_name=${TRAIN_DATA}_garo_KLCov \
+        trainer.experiment_name=${TRAIN_DATA}_new_KLCov \
         trainer.nnodes=${NNODES} \
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=100 \
