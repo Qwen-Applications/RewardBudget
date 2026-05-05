@@ -38,7 +38,7 @@ for t in "${TASKS[@]}"; do
 done
 
 CHECKPOINT_DIR=${PRIMUS_SOURCE_CHECKPOINT_DIR}/${PRIMUS_SOURCE_CHECKPOINT_ITERATION_DIRNAME}
-CHECKPOINT_PATH="${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
+CHECKPOINT_PATH="${CHECKPOINT_DIR}/actor/huggingface"
 
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_PATH}"
