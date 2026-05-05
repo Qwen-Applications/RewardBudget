@@ -26,32 +26,18 @@ if [ -z "$OUTPUT_DIR" ]; then
     exit 1
 fi
 
-if [ -z "$PRIMUS_SAVE_CHECKPOINT_DIR" ]; then
-    echo "Error: PRIMUS_SAVE_CHECKPOINT_DIR not set"
-    exit 1
-fi
-
-# Support multiple tasks in one run (comma-separated), to avoid re-loading ckpt.
-# Split TASK_LIST into an array
+# Support multiple tasks in one run (comma-separated).
+# Split TASK_LIST into an array.
 IFS=',' read -ra TASKS <<< "$TASK_LIST"
 
 OUTPUT_PATH="${OUTPUT_DIR}/GARO_garo/"
 
 DATA_PATHS=()
-TMP_PATHS=()
-OUTPUT_PARQUET_PATHS=()
-EVAL_PATHS=()
-EVAL_JSONL_PATHS=()
 for t in "${TASKS[@]}"; do
   DATA_PATHS+=("${DATA_DIR}/GARO/test_data/${t}.parquet")
-  TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}.parquet")
-  OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}.parquet")
-  EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}.eval.json")
-  EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}.eval.details.jsonl")
 done
 
-# Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
-CHECKPOINT_DIR="/primus_oss_root/repository/quark_sft/${JOB_ID}/save_checkpoint"
+CHECKPOINT_DIR=${PRIMUS_SOURCE_CHECKPOINT_DIR}/${PRIMUS_SOURCE_CHECKPOINT_ITERATION_DIRNAME}
 CHECKPOINT_PATH="${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
 
 # Create output directory if it doesn't exist
@@ -61,8 +47,7 @@ mkdir -p "${TMP_DIR}"
 echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL, step: $STEP, job: $JOB_ID"
 echo "[INFO] Data path(s): ${DATA_PATHS[*]}"
 echo "[INFO] Checkpoint path: ${CHECKPOINT_PATH}"
-echo "[INFO] Output path: ${OUTPUT_PATH} (and temp path(s): ${TMP_PATHS[*]})"
-echo "[INFO] Evaluation path(s): ${EVAL_PATHS[*]}"
+echo "[INFO] Output path: ${OUTPUT_PATH}"
 
 # =========================
 # print first row for debug (first task only)
@@ -100,56 +85,6 @@ export VLLM_USE_NCCL_SYMM_MEM=0
 export HYDRA_FULL_ERROR=1
 export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
 
-
-# Generate responses (load ckpt ONCE, then run all datasets sequentially)
-# Build Hydra list args: data.paths=["p1","p2"], data.output_paths=["o1","o2"]
-paths_arg="["
-outs_arg="["
-for p in "${DATA_PATHS[@]}"; do paths_arg+="\"${p}\","; done
-for o in "${TMP_PATHS[@]}"; do outs_arg+="\"${o}\","; done
-paths_arg=${paths_arg%,}
-outs_arg=${outs_arg%,}
-paths_arg+="]"
-outs_arg+="]"
-
-python -m verl.trainer.main_generation_multi \
-  trainer.nnodes=${NNODES} \
-  trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-  +data.paths=${paths_arg} \
-  +data.output_paths=${outs_arg} \
-  data.prompt_key=prompt \
-  data.n_samples=8 \
-  model.path=${CHECKPOINT_PATH} \
-  +model.trust_remote_code=True \
-  rollout.temperature=0.7 \
-  rollout.top_p=1.0 \
-  rollout.prompt_length=1024 \
-  rollout.response_length=8192 \
-  rollout.data_parallel_size=1 \
-  rollout.pipeline_model_parallel_size=1 \
-  rollout.tensor_model_parallel_size=1 \
-  rollout.mode=sync
-
-python -m verl.trainer.main_generation_multi \
-  trainer.nnodes=${NNODES} \
-  trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-  +data.paths=${paths_arg} \
-  +data.output_paths=${outs_arg} \
-  data.prompt_key=prompt \
-  data.n_samples=1 \
-  model.path=${CHECKPOINT_PATH} \
-  +model.trust_remote_code=True \
-  rollout.temperature=0.0 \
-  rollout.top_p=1.0 \
-  rollout.prompt_length=1024 \
-  rollout.response_length=8192 \
-  rollout.data_parallel_size=1 \
-  rollout.pipeline_model_parallel_size=1 \
-  rollout.tensor_model_parallel_size=1 \
-  rollout.mode=sync
-
-echo "[INFO] Output parquet path(s): ${OUTPUT_PARQUET_PATHS[*]}"
-
 wait_for_file_ready() {
   local file_path="$1"
   local max_tries="${2:-60}"
@@ -180,43 +115,103 @@ wait_for_file_ready() {
   return 1
 }
 
-# Phase 1: wait for all generated parquet files to be fully materialized.
-for idx in "${!TASKS[@]}"; do
-  t=${TASKS[$idx]}
-  tmp=${TMP_PATHS[$idx]}
-  echo "[INFO] Waiting for generated parquet of ${t}: ${tmp}"
-  wait_for_file_ready "${tmp}"
-done
+build_paths_for_k() {
+  local k="$1"
+  TMP_PATHS=()
+  OUTPUT_PARQUET_PATHS=()
+  EVAL_PATHS=()
+  EVAL_JSONL_PATHS=()
 
-# Phase 2: copy all parquet files to the output directory first.
-for idx in "${!TASKS[@]}"; do
-  t=${TASKS[$idx]}
-  tmp=${TMP_PATHS[$idx]}
-  out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
+  for t in "${TASKS[@]}"; do
+    TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}_k${k}.parquet")
+    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}_k${k}.parquet")
+    EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}_k${k}.eval.json")
+    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}_k${k}.eval.details.jsonl")
+  done
+}
 
-  echo "[INFO] Copying generated parquet for ${t}: ${tmp} -> ${OUTPUT_PATH}"
-  rclone copy ${tmp} ${OUTPUT_PATH} --progress --transfers=80
-  wait_for_file_ready "${out_parquet}"
-done
+run_generation_for_k() {
+  local k="$1"
+  local temperature="$2"
 
-# Phase 3: after every parquet is present and stable, run evaluation.
-for idx in "${!TASKS[@]}"; do
-  t=${TASKS[$idx]}
-  out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
-  evalp=${EVAL_PATHS[$idx]}
-  evalj=${EVAL_JSONL_PATHS[$idx]}
+  build_paths_for_k "${k}"
 
-  python3 recipe/GARO/scripts/evaluate/evaluation.py \
-    --file ${out_parquet} --k 8 \
-    --output ${evalp} \
-    --output_jsonl ${evalj} \
-    --qwen_ip "${QWEN_IP}"
-  
+  echo "[INFO] Generating responses for k=${k}, temperature=${temperature}"
+  echo "[INFO] Temp parquet path(s) for k=${k}: ${TMP_PATHS[*]}"
+  echo "[INFO] Output parquet path(s) for k=${k}: ${OUTPUT_PARQUET_PATHS[*]}"
+
+  # main_generation_torchrun_dp only accepts one data.path/data.output_path,
+  # so generate each dataset separately under torchrun data parallelism.
+  for idx in "${!TASKS[@]}"; do
+    t=${TASKS[$idx]}
+    data_path=${DATA_PATHS[$idx]}
+    tmp=${TMP_PATHS[$idx]}
+
+    echo "[INFO] Generating ${t} for k=${k}: ${data_path} -> ${tmp}"
+    TORCHRUN_DP_RUN_ID="${t}_${MODEL}_${STEP}_k${k}" \
+    torchrun --standalone --nproc_per_node=${NUM_ACCELERATORS} \
+      -m verl.trainer.main_generation_torchrun_dp \
+      trainer.nnodes=${NNODES} \
+      trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
+      data.path="${data_path}" \
+      data.output_path="${tmp}" \
+      data.prompt_key=prompt \
+      data.n_samples=${k} \
+      model.path="${CHECKPOINT_PATH}" \
+      +data.trust_remote_code=True \
+      rollout.temperature=${temperature} \
+      rollout.top_p=1.0 \
+      rollout.prompt_length=1024 \
+      rollout.response_length=8192 \
+      rollout.mode=sync
+
+    wait_for_file_ready "${tmp}"
+  done
+}
+
+copy_outputs_for_k() {
+  local k="$1"
+  build_paths_for_k "${k}"
+
+  for idx in "${!TASKS[@]}"; do
+    t=${TASKS[$idx]}
+    tmp=${TMP_PATHS[$idx]}
+    out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
+
+    echo "[INFO] Copying generated parquet for ${t}, k=${k}: ${tmp} -> ${OUTPUT_PATH}"
+    rclone copy "${tmp}" "${OUTPUT_PATH}" --progress --transfers=80
+    wait_for_file_ready "${out_parquet}"
+  done
+}
+
+run_evaluation_for_k() {
+  local k="$1"
+  build_paths_for_k "${k}"
+
+  echo "[INFO] Evaluation path(s) for k=${k}: ${EVAL_PATHS[*]}"
+
+  for idx in "${!TASKS[@]}"; do
+    t=${TASKS[$idx]}
+    out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
+    evalp=${EVAL_PATHS[$idx]}
+    evalj=${EVAL_JSONL_PATHS[$idx]}
+
+    echo "[INFO] Evaluating ${t}, k=${k}: ${out_parquet}"
     python3 recipe/GARO/scripts/evaluate/evaluation.py \
-    --file ${out_parquet} --k 1 \
-    --output ${evalp} \
-    --output_jsonl ${evalj} \
-    --qwen_ip "${QWEN_IP}"
+      --file "${out_parquet}" --k "${k}" \
+      --output "${evalp}" \
+      --output_jsonl "${evalj}" \
+      --qwen_ip "${QWEN_IP}"
 
-  echo "[INFO] Evaluation completed for ${t}. Results saved to ${evalp} (details: ${evalj})"
-done
+    echo "[INFO] Evaluation completed for ${t}, k=${k}. Results saved to ${evalp} (details: ${evalj})"
+  done
+}
+
+# Generate/evaluate k=8 and k=1 into separate files to avoid overwrites.
+run_generation_for_k 8 0.7
+copy_outputs_for_k 8
+run_evaluation_for_k 8
+
+run_generation_for_k 1 0.0
+copy_outputs_for_k 1
+run_evaluation_for_k 1
