@@ -485,6 +485,7 @@ def _init_vllm_engine(config: DictConfig, *, model_path: str, trust_remote_code:
 
     try:
         from vllm import LLM
+        from vllm.engine.arg_utils import EngineArgs
     except ImportError as exc:
         raise ImportError(
             "rollout.backend=vllm requires vLLM to be installed in the runtime environment."
@@ -527,8 +528,58 @@ def _init_vllm_engine(config: DictConfig, *, model_path: str, trust_remote_code:
     engine_kwargs_config = config.rollout.get("engine_kwargs", None)
     if engine_kwargs_config:
         engine_kwargs.update(_dict_config_to_plain_dict(engine_kwargs_config.get("vllm", {}) or {}))
-    engine_kwargs = _filter_kwargs_for_callable(LLM, engine_kwargs)
+    engine_kwargs = _filter_vllm_engine_kwargs(LLM, EngineArgs, engine_kwargs)
     return LLM(**engine_kwargs)
+
+
+def _filter_vllm_engine_kwargs(llm_cls: Any, engine_args_cls: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Keep only kwargs accepted by this installed vLLM version.
+
+    vLLM.LLM accepts **kwargs and forwards them to EngineArgs.  Filtering only
+    against LLM.__init__ therefore lets unsupported EngineArgs fields, such as
+    master_addr/master_port in vLLM 0.10/0.11, slip through and crash at
+    EngineArgs(..., **kwargs).
+    """
+    allowed: set[str] = set()
+
+    def add_signature_kwargs(callable_obj: Any) -> None:
+        try:
+            signature = inspect.signature(callable_obj)
+        except (TypeError, ValueError):
+            return
+        for name, param in signature.parameters.items():
+            if name == "self":
+                continue
+            if param.kind in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }:
+                allowed.add(name)
+
+    # Explicit LLM constructor kwargs, e.g. model/tokenizer/dtype/trust_remote_code.
+    add_signature_kwargs(llm_cls)
+
+    # Extra **kwargs accepted by LLM must also be valid EngineArgs fields.
+    try:
+        import dataclasses
+
+        if dataclasses.is_dataclass(engine_args_cls):
+            allowed.update(field.name for field in dataclasses.fields(engine_args_cls) if field.init)
+        else:
+            add_signature_kwargs(engine_args_cls)
+    except (TypeError, ValueError):
+        add_signature_kwargs(engine_args_cls)
+
+    if not allowed:
+        return _filter_kwargs_for_callable(llm_cls, kwargs)
+
+    dropped = sorted(key for key in kwargs if key not in allowed)
+    if dropped:
+        print(
+            f"[vLLM] Dropping unsupported engine kwargs for this vLLM version: {dropped}",
+            flush=True,
+        )
+    return {key: value for key, value in kwargs.items() if key in allowed}
 
 
 def _filter_kwargs_for_callable(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
