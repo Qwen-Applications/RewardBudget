@@ -35,7 +35,7 @@ fi
 # Split TASK_LIST into an array
 IFS=',' read -ra TASKS <<< "$TASK_LIST"
 
-OUTPUT_PATH="${OUTPUT_DIR}/GARO/"
+OUTPUT_PATH="${OUTPUT_DIR}/GARO_garo/"
 
 DATA_PATHS=()
 TMP_PATHS=()
@@ -45,9 +45,9 @@ EVAL_JSONL_PATHS=()
 for t in "${TASKS[@]}"; do
   DATA_PATHS+=("${DATA_DIR}/GARO/test_data/${t}.parquet")
   TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}.parquet")
-  OUTPUT_PARQUET_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.parquet")
-  EVAL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.json")
-  EVAL_JSONL_PATHS+=("${OUTPUT_DIR}/GARO/${t}_${MODEL}_${STEP}.eval.details.jsonl")
+  OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}.parquet")
+  EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}.eval.json")
+  EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}.eval.details.jsonl")
 done
 
 # Replace JOB_ID in ${PRIMUS_SAVE_CHECKPOINT_DIR}
@@ -55,7 +55,7 @@ CHECKPOINT_DIR="/primus_oss_root/repository/quark_sft/${JOB_ID}/save_checkpoint"
 CHECKPOINT_PATH="${CHECKPOINT_DIR}/global_step_${STEP}/actor/huggingface"
 
 # Create output directory if it doesn't exist
-mkdir -p "${OUTPUT_DIR}/GARO"
+mkdir -p "${OUTPUT_PATH}"
 mkdir -p "${TMP_DIR}"
 
 echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL, step: $STEP, job: $JOB_ID"
@@ -89,8 +89,8 @@ else:
 PY
 # =========================
 
-# export NNODES=1
-# export NUM_ACCELERATORS=8
+export NNODES=1
+export NUM_ACCELERATORS=16
 # export CUDA_VISIBLE_DEVICES=$(seq -s , 0 $((NUM_ACCELERATORS-1)))
 # export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
@@ -121,13 +121,14 @@ python -m verl.trainer.main_generation_multi \
   data.n_samples=8 \
   model.path=${CHECKPOINT_PATH} \
   +model.trust_remote_code=True \
-  rollout.temperature=0.6 \
+  rollout.temperature=0.7 \
   rollout.top_p=1.0 \
   rollout.prompt_length=1024 \
   rollout.response_length=8192 \
-  +rollout.pipeline_model_parallel_size=1 \
+  rollout.data_parallel_size=1 \
+  rollout.pipeline_model_parallel_size=1 \
   rollout.tensor_model_parallel_size=1 \
-  +actor_rollout_ref.rollout.mode=async
+  rollout.mode=sync
 
 echo "[INFO] Output parquet path(s): ${OUTPUT_PARQUET_PATHS[*]}"
 
