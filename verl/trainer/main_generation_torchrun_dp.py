@@ -284,14 +284,33 @@ def _prepare_rank_local_vllm_environment(config: DictConfig, *, local_rank: int)
     os.environ["RANK"] = "0"
     os.environ["WORLD_SIZE"] = "1"
     os.environ["LOCAL_WORLD_SIZE"] = "1"
-    os.environ["MASTER_ADDR"] = str(config.rollout.get("rank_local_master_addr", "127.0.0.1"))
-    os.environ["MASTER_PORT"] = str(
-        config.rollout.get("rank_local_master_port", _find_free_loopback_port())
-    )
-    # vLLM uses this env var in some versions when choosing the host IP for
-    # distributed init.  Pin it to loopback for the isolated rank-local engine.
-    os.environ["VLLM_HOST_IP"] = os.environ["MASTER_ADDR"]
+
+    # vLLM 0.11's UniProcExecutor ignores MASTER_PORT when choosing the
+    # internal TCP rendezvous port; it uses VLLM_HOST_IP/VLLM_PORT instead.
+    # Keep MASTER_* and VLLM_* in sync so the EngineCore does not inherit a
+    # torchrun rendezvous endpoint or race on an implicit random port.
+    rank_local_master_addr = str(config.rollout.get("rank_local_master_addr", "127.0.0.1"))
+    rank_local_master_port = int(config.rollout.get("rank_local_master_port", _find_free_loopback_port()))
+    os.environ["MASTER_ADDR"] = rank_local_master_addr
+    os.environ["MASTER_PORT"] = str(rank_local_master_port)
+    os.environ["VLLM_HOST_IP"] = rank_local_master_addr
+    os.environ["VLLM_PORT"] = str(rank_local_master_port)
+
+    # Clear vLLM data-parallel metadata in case it was set by the outer job.
+    # This entrypoint implements data parallelism itself with torchrun shards;
+    # every rank-local vLLM instance must remain a world-size-1 engine.
+    os.environ["VLLM_DP_SIZE"] = "1"
+    os.environ["VLLM_DP_RANK"] = "0"
+    os.environ["VLLM_DP_RANK_LOCAL"] = "0"
+    os.environ["VLLM_DP_MASTER_IP"] = rank_local_master_addr
+    os.environ["VLLM_DP_MASTER_PORT"] = "0"
+
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    if not bool(config.rollout.get("enable_v1_multiprocessing", False)):
+        # Avoid spawning an extra EngineCore process inside every torchrun rank.
+        # In vLLM 0.11 this nested multiprocessing path is the source of the
+        # observed TCPStore client timeout on 127.0.0.1:<random_port>.
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 
 
 def _find_free_loopback_port() -> int:
