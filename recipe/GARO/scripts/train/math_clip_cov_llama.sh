@@ -88,7 +88,7 @@ else
         custom_reward_function.name=compute_score \
         reward_model.reward_manager=dapo \
         +reward_model.reward_kwargs.max_resp_len=8192 \
-        algorithm.adv_estimator=reward_budget_mean \
+        algorithm.adv_estimator=grpo \
         algorithm.use_kl_in_reward=False \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.ref_sync_freq=20000000 \
@@ -102,7 +102,7 @@ else
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=100 \
         trainer.test_freq=5 \
-        trainer.total_epochs=10 \
+        trainer.total_epochs=5 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}" \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \

@@ -87,14 +87,14 @@ else
         reward_model.overlong_buffer.len=2048 \
         reward_model.overlong_buffer.penalty_factor=1.0 \
         algorithm.use_kl_in_reward=False \
-        algorithm.adv_estimator=reward_budget_mean \
+        algorithm.adv_estimator=grpo \
         algorithm.ref_sync_freq=20000000 \
         algorithm.filter_groups.enable=True \
         algorithm.filter_groups.max_num_gen_batches=10 \
         algorithm.filter_groups.metric=acc \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
-        trainer.total_epochs=10 \
+        trainer.total_epochs=5 \
         trainer.project_name=GARO \
         trainer.experiment_name=${TRAIN_DATA}_garo_DAPO_Llama \
         trainer.logger='["console","wandb"]' \

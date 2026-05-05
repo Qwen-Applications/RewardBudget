@@ -80,12 +80,12 @@ else
         custom_reward_function.path=recipe/GARO/reward.py \
         custom_reward_function.name=compute_score \
         algorithm.use_kl_in_reward=False \
-        algorithm.adv_estimator=reward_budget_mean \
+        algorithm.adv_estimator=grpo \
         algorithm.ref_sync_freq=20000000 \
         algorithm.norm_adv_by_std_in_grpo=False \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
-        trainer.total_epochs=10 \
+        trainer.total_epochs=5 \
         trainer.project_name=GARO \
         trainer.experiment_name=${TRAIN_DATA}_garo_DRGRPO_Llama \
         trainer.logger='["console","wandb"]' \

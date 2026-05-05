@@ -82,7 +82,7 @@ else
         actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
         actor_rollout_ref.rollout.val_kwargs.n=1 \
         actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-        algorithm.adv_estimator=reward_budget_mean \
+        algorithm.adv_estimator=grpo \
         algorithm.use_kl_in_reward=False \
         algorithm.kl_ctrl.kl_coef=0.0 \
         algorithm.ref_sync_freq=20000000 \
@@ -100,7 +100,7 @@ else
         trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
         trainer.save_freq=100 \
         trainer.test_freq=5 \
-        trainer.total_epochs=10 \
+        trainer.total_epochs=5 \
         trainer.default_local_dir="${PRIMUS_SAVE_CHECKPOINT_DIR}" \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
