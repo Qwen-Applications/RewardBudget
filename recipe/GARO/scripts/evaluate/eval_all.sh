@@ -12,7 +12,7 @@ if [ $# -ne 3 ]; then
     exit 1
 fi
 
-TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_math_en_comp,OlympiadBench_physics_en_comp" # omni_math
+TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp,OlympiadBench_math_en_comp" # omni_math
 MODEL="$1"
 STEP="$2"
 JOB_ID="$3"
