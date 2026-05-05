@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 from pprint import pprint
@@ -78,9 +77,12 @@ def run_generation_torchrun_dp(config: DictConfig) -> None:
         ready_file = shard_dir / "_READY"
 
         if rank == 0:
-            if shard_dir.exists():
-                shutil.rmtree(shard_dir)
-            shard_dir.mkdir(parents=True, exist_ok=False)
+            shard_dir.mkdir(parents=True, exist_ok=True)
+            for done_file in shard_dir.glob("rank_*.done"):
+                done_file.unlink()
+            merged_file = shard_dir / "_MERGED"
+            if merged_file.exists():
+                merged_file.unlink()
             _atomic_write_text(ready_file, "ready\n")
         else:
             _wait_for_files([ready_file], timeout_sec=_merge_timeout_sec(config), poll_interval_sec=0.2)
@@ -119,16 +121,41 @@ def run_generation_torchrun_dp(config: DictConfig) -> None:
         if int(config.data.n_samples) < 1:
             raise ValueError("data.n_samples must be >= 1.")
 
-        local_results = _generate_local_results(
-            local_positions=local_positions,
-            local_chats=local_chats,
-            tokenizer=tokenizer,
-            model=model,
-            device=device,
-            config=config,
-        )
-        _write_rank_shard(shard_dir, rank=rank, rows=local_results)
-        print(f"[rank {rank}/{world_size}] wrote shard with {len(local_results)} rows", flush=True)
+        n_samples = int(config.data.n_samples)
+        existing_responses = _load_existing_rank_results(shard_dir, rank=rank, n_samples=n_samples)
+        local_position_set = set(local_positions)
+        existing_responses = {
+            pos: responses for pos, responses in existing_responses.items() if pos in local_position_set
+        }
+        complete_existing = sum(1 for pos in local_positions if len(existing_responses.get(pos, [])) >= n_samples)
+        if existing_responses:
+            print(
+                f"[rank {rank}/{world_size}] resumed {complete_existing}/{len(local_positions)} prompts "
+                f"from {shard_dir / _rank_shard_name(rank)}",
+                flush=True,
+            )
+
+        if complete_existing == len(local_positions):
+            local_results = [
+                {"row_position": row_position, "responses": existing_responses[row_position][:n_samples]}
+                for row_position in local_positions
+            ]
+            _write_rank_shard(shard_dir, rank=rank, rows=local_results)
+            print(f"[rank {rank}/{world_size}] reused shard with {len(local_results)} rows", flush=True)
+        else:
+            local_results = _generate_local_results(
+                local_positions=local_positions,
+                local_chats=local_chats,
+                tokenizer=tokenizer,
+                model=model,
+                device=device,
+                config=config,
+                existing_responses_by_position=existing_responses,
+                shard_dir=shard_dir,
+                rank=rank,
+            )
+            _write_rank_shard(shard_dir, rank=rank, rows=local_results)
+            print(f"[rank {rank}/{world_size}] wrote shard with {len(local_results)} rows", flush=True)
 
         if rank == 0:
             _merge_rank_shards(
@@ -257,6 +284,9 @@ def _generate_local_results(
     model: AutoModelForCausalLM,
     device: torch.device,
     config: DictConfig,
+    existing_responses_by_position: dict[int, list[str]] | None,
+    shard_dir: Path,
+    rank: int,
 ) -> list[dict[str, Any]]:
     if not local_positions:
         return []
@@ -265,43 +295,75 @@ def _generate_local_results(
     n_samples = int(config.data.n_samples)
     apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
     generation_kwargs = _generation_kwargs(config, tokenizer)
-    num_batches = -(-len(local_chats) // batch_size)
-    rows: list[dict[str, Any]] = []
+    responses_by_position: dict[int, list[str]] = {
+        row_position: list(responses[:n_samples])
+        for row_position, responses in (existing_responses_by_position or {}).items()
+    }
+    pending_items = [
+        (row_position, chat)
+        for row_position, chat in zip(local_positions, local_chats, strict=True)
+        if len(responses_by_position.get(row_position, [])) < n_samples
+    ]
+    num_batches = -(-len(pending_items) // batch_size)
 
     for batch_idx in range(num_batches):
         start = batch_idx * batch_size
-        end = min((batch_idx + 1) * batch_size, len(local_chats))
-        batch_chats = local_chats[start:end]
-        batch_positions = local_positions[start:end]
+        end = min((batch_idx + 1) * batch_size, len(pending_items))
+        batch_items = pending_items[start:end]
+        batch_positions = [row_position for row_position, _ in batch_items]
+        batch_chats = [chat for _, chat in batch_items]
         print(f"[local batch {batch_idx + 1}/{num_batches}] processing {len(batch_chats)} prompts", flush=True)
 
-        inputs = tokenizer.apply_chat_template(
-            batch_chats,
-            add_generation_prompt=True,
-            padding=True,
-            truncation=True,
-            max_length=int(config.rollout.prompt_length),
-            return_tensors="pt",
-            return_dict=True,
-            tokenize=True,
-            **apply_chat_template_kwargs,
-        )
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        input_length = inputs["input_ids"].shape[-1]
-        sample_outputs: list[list[str]] = [[] for _ in batch_chats]
-
         with torch.inference_mode():
-            for _ in range(n_samples):
+            for sample_idx in range(n_samples):
+                active_indices = [
+                    row_idx
+                    for row_idx, row_position in enumerate(batch_positions)
+                    if len(responses_by_position.get(row_position, [])) <= sample_idx
+                ]
+                if not active_indices:
+                    continue
+
+                active_chats = [batch_chats[row_idx] for row_idx in active_indices]
+                inputs = tokenizer.apply_chat_template(
+                    active_chats,
+                    add_generation_prompt=True,
+                    padding=True,
+                    truncation=True,
+                    max_length=int(config.rollout.prompt_length),
+                    return_tensors="pt",
+                    return_dict=True,
+                    tokenize=True,
+                    **apply_chat_template_kwargs,
+                )
+                inputs = {key: value.to(device) for key, value in inputs.items()}
+                input_length = inputs["input_ids"].shape[-1]
                 output_ids = model.generate(**inputs, **generation_kwargs)
                 response_ids = output_ids[:, input_length:]
                 responses = tokenizer.batch_decode(response_ids, skip_special_tokens=True)
-                for row_idx, response in enumerate(responses):
-                    sample_outputs[row_idx].append(response)
+                for row_idx, response in zip(active_indices, responses, strict=True):
+                    row_position = batch_positions[row_idx]
+                    row_responses = responses_by_position.setdefault(row_position, [])
+                    row_responses.append(response)
+                    _append_rank_shard_row(
+                        shard_dir,
+                        rank=rank,
+                        row={"row_position": row_position, "responses": row_responses},
+                    )
 
-        for row_position, responses in zip(batch_positions, sample_outputs, strict=True):
-            rows.append({"row_position": row_position, "responses": responses})
+    incomplete = [
+        row_position
+        for row_position in local_positions
+        if len(responses_by_position.get(row_position, [])) < n_samples
+    ]
+    if incomplete:
+        preview = incomplete[:20]
+        raise RuntimeError(f"Incomplete generated rows: {preview} (total_incomplete={len(incomplete)})")
 
-    return rows
+    return [
+        {"row_position": row_position, "responses": responses_by_position[row_position][:n_samples]}
+        for row_position in local_positions
+    ]
 
 
 def _write_rank_shard(shard_dir: Path, *, rank: int, rows: list[dict[str, Any]]) -> None:
@@ -311,6 +373,45 @@ def _write_rank_shard(shard_dir: Path, *, rank: int, rows: list[dict[str, Any]])
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     os.replace(tmp_path, shard_path)
+    _atomic_write_text(shard_dir / _rank_done_name(rank), "done\n")
+
+
+def _append_rank_shard_row(shard_dir: Path, *, rank: int, row: dict[str, Any]) -> None:
+    shard_path = shard_dir / _rank_shard_name(rank)
+    with shard_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _load_existing_rank_results(shard_dir: Path, *, rank: int, n_samples: int) -> dict[int, list[str]]:
+    shard_path = shard_dir / _rank_shard_name(rank)
+    if not shard_path.exists():
+        return {}
+
+    responses_by_position: dict[int, list[str]] = {}
+    with shard_path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"Ignoring invalid JSON line in {shard_path}:{line_no}", flush=True)
+                continue
+
+            try:
+                row_position = int(row["row_position"])
+                responses = row["responses"]
+                if not isinstance(responses, list):
+                    raise TypeError
+            except (KeyError, TypeError, ValueError):
+                print(f"Ignoring malformed generation row in {shard_path}:{line_no}", flush=True)
+                continue
+
+            responses = responses[:n_samples]
+            if len(responses) >= len(responses_by_position.get(row_position, [])):
+                responses_by_position[row_position] = responses
+
+    return responses_by_position
 
 
 def _merge_rank_shards(
@@ -324,7 +425,8 @@ def _merge_rank_shards(
     poll_interval_sec: float,
 ) -> None:
     shard_paths = [shard_dir / _rank_shard_name(rank) for rank in range(world_size)]
-    _wait_for_files(shard_paths, timeout_sec=timeout_sec, poll_interval_sec=poll_interval_sec)
+    done_paths = [shard_dir / _rank_done_name(rank) for rank in range(world_size)]
+    _wait_for_files(done_paths, timeout_sec=timeout_sec, poll_interval_sec=poll_interval_sec)
 
     responses_by_position: dict[int, list[str]] = {}
     for shard_path in shard_paths:
@@ -354,6 +456,10 @@ def _merge_rank_shards(
 
 def _rank_shard_name(rank: int) -> str:
     return f"rank_{rank:05d}.jsonl"
+
+
+def _rank_done_name(rank: int) -> str:
+    return f"rank_{rank:05d}.done"
 
 
 def _wait_for_files(paths: list[Path], *, timeout_sec: float, poll_interval_sec: float) -> None:
