@@ -232,11 +232,122 @@ def _select_device(local_rank: int) -> torch.device:
     return torch.device(f"cuda:{local_rank}")
 
 
-def _normalize_chat(chat: Any) -> Any:
-    """Convert parquet/list-like chat values to plain Python objects."""
-    if hasattr(chat, "tolist"):
-        return chat.tolist()
-    return chat
+def _to_plain_python(value: Any) -> Any:
+    """Convert numpy/pyarrow scalar-or-array values from parquet to Python objects."""
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        return value.tolist()
+    return value
+
+
+def _scalar_chat_field(value: Any) -> str:
+    value = _to_plain_python(value)
+    if isinstance(value, list):
+        if len(value) == 0:
+            return ""
+        if len(value) == 1:
+            return str(value[0])
+        return "\n".join(str(item) for item in value)
+    return "" if value is None else str(value)
+
+
+def _normalize_chat(chat: Any) -> list[dict[str, str]]:
+    """Normalize parquet prompt values to HF chat-template messages.
+
+    The expected logical shape is list[dict(role, content)].  Depending on
+    pyarrow/pandas versions, a parquet list<struct<role, content>> cell can be
+    materialized as:
+      - np.ndarray([{'role': 'user', 'content': '...'}])
+      - [{'role': 'user', 'content': '...'}]
+      - {'role': ['user'], 'content': ['...']}
+      - {'role': 'user', 'content': '...'}
+
+    Returning a bare dict is dangerous: tokenizer.apply_chat_template sees a
+    batch like [dict, dict, ...] as one multi-turn conversation, so generation
+    returns one output for many prompts.
+    """
+    chat = _to_plain_python(chat)
+
+    if isinstance(chat, dict):
+        role = _to_plain_python(chat.get("role", "user"))
+        content = _to_plain_python(chat.get("content", ""))
+        if isinstance(role, list) or isinstance(content, list):
+            roles = role if isinstance(role, list) else [role] * len(content)
+            contents = content if isinstance(content, list) else [content] * len(roles)
+            if len(roles) != len(contents):
+                raise ValueError(f"Malformed chat dict: len(role)={len(roles)} != len(content)={len(contents)}")
+            return [
+                {"role": _scalar_chat_field(r) or "user", "content": _scalar_chat_field(c)}
+                for r, c in zip(roles, contents, strict=True)
+            ]
+        return [{"role": _scalar_chat_field(role) or "user", "content": _scalar_chat_field(content)}]
+
+    if isinstance(chat, list):
+        if len(chat) == 0:
+            return [{"role": "user", "content": ""}]
+        messages: list[dict[str, str]] = []
+        for message in chat:
+            message = _to_plain_python(message)
+            if isinstance(message, dict):
+                messages.append(
+                    {
+                        "role": _scalar_chat_field(message.get("role", "user")) or "user",
+                        "content": _scalar_chat_field(message.get("content", "")),
+                    }
+                )
+            else:
+                messages.append({"role": "user", "content": _scalar_chat_field(message)})
+        return messages
+
+    return [{"role": "user", "content": _scalar_chat_field(chat)}]
+
+
+def _chat_to_token_ids(
+    *,
+    tokenizer: Any,
+    chat: list[dict[str, str]],
+    config: DictConfig,
+    apply_chat_template_kwargs: Any,
+) -> list[int]:
+    ids = tokenizer.apply_chat_template(
+        chat,
+        add_generation_prompt=True,
+        truncation=True,
+        max_length=int(config.rollout.prompt_length),
+        tokenize=True,
+        **apply_chat_template_kwargs,
+    )
+    if isinstance(ids, dict):
+        ids = ids["input_ids"]
+    ids = _to_plain_python(ids)
+    if ids and isinstance(ids[0], list):
+        if len(ids) != 1:
+            raise RuntimeError(f"Single chat unexpectedly encoded as a batch of {len(ids)} prompts.")
+        ids = ids[0]
+    return [int(token_id) for token_id in ids]
+
+
+def _batch_encode_chats_with_template(
+    *,
+    tokenizer: Any,
+    chats: list[list[dict[str, str]]],
+    config: DictConfig,
+    apply_chat_template_kwargs: Any,
+) -> Any:
+    """Encode each chat independently, then pad.
+
+    This avoids tokenizer-version-dependent ambiguity in batched
+    apply_chat_template and guarantees input_ids.shape[0] == len(chats).
+    """
+    input_ids = [
+        _chat_to_token_ids(
+            tokenizer=tokenizer,
+            chat=chat,
+            config=config,
+            apply_chat_template_kwargs=apply_chat_template_kwargs,
+        )
+        for chat in chats
+    ]
+    return tokenizer.pad({"input_ids": input_ids}, padding=True, return_tensors="pt")
 
 
 def _generation_backend(config: DictConfig) -> str:
@@ -452,17 +563,17 @@ def _generate_local_results_hf(
                     continue
 
                 active_chats = [batch_chats[row_idx] for row_idx in active_indices]
-                inputs = tokenizer.apply_chat_template(
-                    active_chats,
-                    add_generation_prompt=True,
-                    padding=True,
-                    truncation=True,
-                    max_length=int(config.rollout.prompt_length),
-                    return_tensors="pt",
-                    return_dict=True,
-                    tokenize=True,
-                    **apply_chat_template_kwargs,
+                inputs = _batch_encode_chats_with_template(
+                    tokenizer=tokenizer,
+                    chats=active_chats,
+                    config=config,
+                    apply_chat_template_kwargs=apply_chat_template_kwargs,
                 )
+                if inputs["input_ids"].shape[0] != len(active_chats):
+                    raise RuntimeError(
+                        f"Tokenizer encoded {inputs['input_ids'].shape[0]} prompts for "
+                        f"{len(active_chats)} active chats. First chat={active_chats[0]!r}"
+                    )
                 inputs = {key: value.to(device) for key, value in inputs.items()}
                 input_length = inputs["input_ids"].shape[-1]
                 output_ids = model.generate(**inputs, **generation_kwargs)
@@ -670,19 +781,15 @@ def _apply_chat_template_to_prompt_ids(
     config: DictConfig,
 ) -> list[list[int]]:
     apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
-    prompt_ids = tokenizer.apply_chat_template(
-        chats,
-        add_generation_prompt=True,
-        truncation=True,
-        max_length=int(config.rollout.prompt_length),
-        tokenize=True,
-        **apply_chat_template_kwargs,
-    )
-    if hasattr(prompt_ids, "tolist"):
-        prompt_ids = prompt_ids.tolist()
-    if prompt_ids and isinstance(prompt_ids[0], int):
-        prompt_ids = [prompt_ids]
-    return [list(map(int, ids)) for ids in prompt_ids]
+    return [
+        _chat_to_token_ids(
+            tokenizer=tokenizer,
+            chat=_normalize_chat(chat),
+            config=config,
+            apply_chat_template_kwargs=apply_chat_template_kwargs,
+        )
+        for chat in chats
+    ]
 
 
 def _completion_text(tokenizer: Any, completion: Any) -> str:
