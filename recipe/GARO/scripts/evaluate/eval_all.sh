@@ -1,21 +1,12 @@
 #!/bin/bash
 
 # Unified evaluation script for GARO tasks
-# Usage: ./recipe/GARO/scripts/eval.sh <model> <global_step> <job_id>
+# Usage: ./recipe/GARO/scripts/eval.sh <model>
 
 set -e
 
-# Check arguments
-if [ $# -ne 3 ]; then
-    echo "Usage: $0 <model> <global_step> <job_id>"
-    echo "Example: $0 grpo 300 primusad7f74c10a9b94a3b69982f24z"
-    exit 1
-fi
-
 TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp,OlympiadBench_math_en_comp" # omni_math
 MODEL="$1"
-STEP="$2"
-JOB_ID="$3"
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
 TMP_DIR="/root/tmp"
@@ -55,7 +46,7 @@ export VLLM_TENSOR_MODEL_PARALLEL_SIZE=${VLLM_TENSOR_MODEL_PARALLEL_SIZE:-1}
 export VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-True}
 export VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-True}
 
-echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL, step: $STEP, job: $JOB_ID"
+echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL"
 echo "[INFO] Data path(s): ${DATA_PATHS[*]}"
 echo "[INFO] Checkpoint path: ${CHECKPOINT_PATH}"
 echo "[INFO] Output path: ${OUTPUT_PATH}"
@@ -129,10 +120,10 @@ build_paths_for_k() {
   EVAL_JSONL_PATHS=()
 
   for t in "${TASKS[@]}"; do
-    TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_${STEP}_k${k}.parquet")
-    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}_k${k}.parquet")
-    EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}_k${k}.eval.json")
-    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_${STEP}_k${k}.eval.details.jsonl")
+    TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_k${k}.parquet")
+    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.parquet")
+    EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.eval.json")
+    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.eval.details.jsonl")
   done
 }
 
@@ -154,7 +145,7 @@ run_generation_for_k() {
     tmp=${TMP_PATHS[$idx]}
 
     echo "[INFO] Generating ${t} for k=${k}: ${data_path} -> ${tmp}"
-    TORCHRUN_DP_RUN_ID="${t}_${MODEL}_${STEP}_k${k}" \
+    TORCHRUN_DP_RUN_ID="${t}_${MODEL}_k${k}" \
     torchrun --standalone --nproc_per_node=${NUM_ACCELERATORS} \
       -m verl.trainer.main_generation_torchrun_dp \
       trainer.nnodes=${NNODES} \
