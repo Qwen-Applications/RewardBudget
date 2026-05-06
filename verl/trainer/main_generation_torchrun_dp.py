@@ -554,7 +554,8 @@ def _vllm_dtype(dtype: Any) -> str:
 
 def _build_shard_dir(output_path: str, *, world_size: int) -> Path:
     output = Path(output_path).expanduser()
-    parent = output.parent if str(output.parent) else Path(".")
+    shard_root = os.environ.get("TORCHRUN_DP_SHARD_ROOT")
+    parent = Path(shard_root).expanduser() if shard_root else (output.parent if str(output.parent) else Path("."))
     basename = output.name or "generation_output.parquet"
     run_id = (
         os.environ.get("TORCHRUN_DP_RUN_ID")

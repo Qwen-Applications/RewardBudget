@@ -136,14 +136,14 @@ run_generation_for_k() {
   build_paths_for_k "${k}"
 
   echo "[INFO] Generating responses for k=${k}, temperature=${temperature}"
-  echo "[INFO] Temp parquet path(s) for k=${k}: ${TMP_PATHS[*]}"
+  echo "[INFO] Shard root for k=${k}: ${TMP_DIR}"
   echo "[INFO] Output parquet path(s) for k=${k}: ${OUTPUT_PARQUET_PATHS[*]}"
 
   # Build Hydra list args: data.paths=["p1","p2"], data.output_paths=["o1","o2"]
   paths_arg="["
   outs_arg="["
   for p in "${DATA_PATHS[@]}"; do paths_arg+="\"${p}\","; done
-  for o in "${TMP_PATHS[@]}"; do outs_arg+="\"${o}\","; done
+  for o in "${OUTPUT_PARQUET_PATHS[@]}"; do outs_arg+="\"${o}\","; done
   paths_arg=${paths_arg%,}
   outs_arg=${outs_arg%,}
   paths_arg+="]"
@@ -151,6 +151,7 @@ run_generation_for_k() {
 
   echo "[INFO] Generating all datasets for k=${k} in one torchrun."
   TORCHRUN_DP_RUN_ID="${MODEL}_k${k}_$(date +%s)" \
+  TORCHRUN_DP_SHARD_ROOT="${TMP_DIR}" \
   torchrun --standalone --nproc_per_node=${NUM_ACCELERATORS} \
     -m verl.trainer.main_generation_torchrun_dp \
     trainer.nnodes=${NNODES} \
@@ -179,22 +180,7 @@ run_generation_for_k() {
     rollout.response_length=8192 \
     rollout.mode=sync
 
-  for tmp in "${TMP_PATHS[@]}"; do
-    wait_for_file_ready "${tmp}"
-  done
-}
-
-copy_outputs_for_k() {
-  local k="$1"
-  build_paths_for_k "${k}"
-
-  for idx in "${!TASKS[@]}"; do
-    t=${TASKS[$idx]}
-    tmp=${TMP_PATHS[$idx]}
-    out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
-
-    echo "[INFO] Copying generated parquet for ${t}, k=${k}: ${tmp} -> ${OUTPUT_PATH}"
-    rclone copy "${tmp}" "${OUTPUT_PATH}" --progress --transfers=80
+  for out_parquet in "${OUTPUT_PARQUET_PATHS[@]}"; do
     wait_for_file_ready "${out_parquet}"
   done
 }
@@ -224,9 +210,7 @@ run_evaluation_for_k() {
 
 # Generate/evaluate k=8 and k=1 into separate files to avoid overwrites.
 run_generation_for_k 8 0.7
-copy_outputs_for_k 8
 run_evaluation_for_k 8
 
 run_generation_for_k 1 0.0
-copy_outputs_for_k 1
 run_evaluation_for_k 1
