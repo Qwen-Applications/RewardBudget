@@ -81,34 +81,9 @@ def run_generation_torchrun_dp(config: DictConfig) -> None:
         OmegaConf.resolve(config)
 
         device = _select_device(0 if backend == "vllm" else local_rank)
-        data_path = str(config.data.path)
-        output_path = str(config.data.output_path)
-        shard_dir = _build_shard_dir(output_path, world_size=world_size)
-        ready_file = shard_dir / "_READY"
-
+        io_pairs = _dataset_io_pairs(config)
         if rank == 0:
-            shard_dir.mkdir(parents=True, exist_ok=True)
-            for done_file in shard_dir.glob("rank_*.done"):
-                done_file.unlink()
-            merged_file = shard_dir / "_MERGED"
-            if merged_file.exists():
-                merged_file.unlink()
-            _atomic_write_text(ready_file, "ready\n")
-        else:
-            _wait_for_files([ready_file], timeout_sec=_merge_timeout_sec(config), poll_interval_sec=0.2)
-
-        dataset = pd.read_parquet(data_path)
-        total_rows = len(dataset)
-        row_positions = list(range(total_rows))
-        local_positions = shard_generation_requests(row_positions, rank=rank, world_size=world_size)
-        local_dataset = dataset.iloc[local_positions]
-        local_chats = [_normalize_chat(chat) for chat in local_dataset[config.data.prompt_key].tolist()]
-
-        print(
-            f"[rank {rank}/{world_size}] device={device} shard_size={len(local_positions)} "
-            f"total_size={total_rows}",
-            flush=True,
-        )
+            print(f"[INFO] torchrun-dp will generate {len(io_pairs)} dataset(s) with one model load.", flush=True)
 
         import_external_libs(config.model.get("external_lib", None))
         model_path = copy_to_local(str(config.model.path))
@@ -136,67 +111,172 @@ def run_generation_torchrun_dp(config: DictConfig) -> None:
         if int(config.data.n_samples) < 1:
             raise ValueError("data.n_samples must be >= 1.")
 
-        n_samples = int(config.data.n_samples)
-        existing_responses = _load_existing_rank_results(shard_dir, rank=rank, n_samples=n_samples)
-        local_position_set = set(local_positions)
-        existing_responses = {
-            pos: responses for pos, responses in existing_responses.items() if pos in local_position_set
-        }
-        complete_existing = sum(1 for pos in local_positions if len(existing_responses.get(pos, [])) >= n_samples)
-        if existing_responses:
-            print(
-                f"[rank {rank}/{world_size}] resumed {complete_existing}/{len(local_positions)} prompts "
-                f"from {shard_dir / _rank_shard_name(rank)}",
-                flush=True,
-            )
-
-        if complete_existing == len(local_positions):
-            local_results = [
-                {"row_position": row_position, "responses": existing_responses[row_position][:n_samples]}
-                for row_position in local_positions
-            ]
-            _write_rank_shard(shard_dir, rank=rank, rows=local_results)
-            print(f"[rank {rank}/{world_size}] reused shard with {len(local_results)} rows", flush=True)
-        else:
-            if backend == "vllm":
-                local_results = _generate_local_results_vllm(
-                    local_positions=local_positions,
-                    local_chats=local_chats,
-                    tokenizer=tokenizer,
-                    llm=llm,
-                    config=config,
-                    existing_responses_by_position=existing_responses,
-                    shard_dir=shard_dir,
-                    rank=rank,
+        for dataset_idx, (data_path, output_path) in enumerate(io_pairs, start=1):
+            if rank == 0:
+                print(
+                    f"[INFO] ({dataset_idx}/{len(io_pairs)}) Generating {data_path} -> {output_path}",
+                    flush=True,
                 )
-            else:
-                local_results = _generate_local_results_hf(
-                    local_positions=local_positions,
-                    local_chats=local_chats,
-                    tokenizer=tokenizer,
-                    model=model,
-                    device=device,
-                    config=config,
-                    existing_responses_by_position=existing_responses,
-                    shard_dir=shard_dir,
-                    rank=rank,
-                )
-            _write_rank_shard(shard_dir, rank=rank, rows=local_results)
-            print(f"[rank {rank}/{world_size}] wrote shard with {len(local_results)} rows", flush=True)
-
-        if rank == 0:
-            _merge_rank_shards(
-                dataset=dataset,
+            _run_one_dataset_torchrun_dp(
+                data_path=data_path,
                 output_path=output_path,
-                shard_dir=shard_dir,
+                tokenizer=tokenizer,
+                model=model,
+                llm=llm,
+                device=device,
+                config=config,
+                backend=backend,
+                rank=rank,
                 world_size=world_size,
-                total_rows=total_rows,
-                timeout_sec=_merge_timeout_sec(config),
-                poll_interval_sec=_poll_interval_sec(config),
+                run_token=_run_token(dataset_idx=dataset_idx),
             )
     finally:
         if dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()
+
+
+def _dataset_io_pairs(config: DictConfig) -> list[tuple[str, str]]:
+    """Return (input parquet, output parquet) pairs.
+
+    Backward compatible single-dataset mode:
+      data.path=/x/a.parquet data.output_path=/tmp/a.out.parquet
+
+    Multi-dataset mode:
+      +data.paths=[/x/a.parquet,/x/b.parquet]
+      +data.output_paths=[/tmp/a.out.parquet,/tmp/b.out.parquet]
+    """
+    paths = config.data.get("paths", None)
+    output_paths = config.data.get("output_paths", None)
+    if paths is None and output_paths is None:
+        return [(str(config.data.path), str(config.data.output_path))]
+    if paths is None or output_paths is None:
+        raise ValueError("data.paths and data.output_paths must be provided together.")
+
+    paths = [str(path) for path in list(paths)]
+    output_paths = [str(path) for path in list(output_paths)]
+    if not paths:
+        raise ValueError("data.paths must be a non-empty list.")
+    if len(paths) != len(output_paths):
+        raise ValueError(f"len(data.paths)={len(paths)} != len(data.output_paths)={len(output_paths)}")
+    return list(zip(paths, output_paths, strict=True))
+
+
+def _run_one_dataset_torchrun_dp(
+    *,
+    data_path: str,
+    output_path: str,
+    tokenizer: Any,
+    model: AutoModelForCausalLM | None,
+    llm: Any,
+    device: torch.device,
+    config: DictConfig,
+    backend: str,
+    rank: int,
+    world_size: int,
+    run_token: str,
+) -> None:
+    shard_dir = _build_shard_dir(output_path, world_size=world_size)
+    ready_file = shard_dir / "_READY"
+
+    if rank == 0:
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        for done_file in shard_dir.glob("rank_*.done"):
+            done_file.unlink()
+        merged_file = shard_dir / "_MERGED"
+        if merged_file.exists():
+            merged_file.unlink()
+        _atomic_write_text(ready_file, run_token + "\n")
+    else:
+        _wait_for_ready_token(
+            ready_file,
+            token=run_token,
+            timeout_sec=_merge_timeout_sec(config),
+            poll_interval_sec=0.2,
+        )
+
+    dataset = pd.read_parquet(data_path)
+    total_rows = len(dataset)
+    row_positions = list(range(total_rows))
+    local_positions = shard_generation_requests(row_positions, rank=rank, world_size=world_size)
+    local_dataset = dataset.iloc[local_positions]
+    local_chats = [_normalize_chat(chat) for chat in local_dataset[config.data.prompt_key].tolist()]
+
+    print(
+        f"[rank {rank}/{world_size}] device={device} data={data_path} "
+        f"shard_size={len(local_positions)} total_size={total_rows}",
+        flush=True,
+    )
+
+    n_samples = int(config.data.n_samples)
+    existing_responses = _load_existing_rank_results(shard_dir, rank=rank, n_samples=n_samples)
+    local_position_set = set(local_positions)
+    existing_responses = {pos: responses for pos, responses in existing_responses.items() if pos in local_position_set}
+    complete_existing = sum(1 for pos in local_positions if len(existing_responses.get(pos, [])) >= n_samples)
+    if existing_responses:
+        print(
+            f"[rank {rank}/{world_size}] resumed {complete_existing}/{len(local_positions)} prompts "
+            f"from {shard_dir / _rank_shard_name(rank)}",
+            flush=True,
+        )
+
+    if complete_existing == len(local_positions):
+        local_results = [
+            {"row_position": row_position, "responses": existing_responses[row_position][:n_samples]}
+            for row_position in local_positions
+        ]
+        _write_rank_shard(shard_dir, rank=rank, rows=local_results)
+        print(f"[rank {rank}/{world_size}] reused shard with {len(local_results)} rows", flush=True)
+    else:
+        if backend == "vllm":
+            local_results = _generate_local_results_vllm(
+                local_positions=local_positions,
+                local_chats=local_chats,
+                tokenizer=tokenizer,
+                llm=llm,
+                config=config,
+                existing_responses_by_position=existing_responses,
+                shard_dir=shard_dir,
+                rank=rank,
+            )
+        else:
+            if model is None:
+                raise RuntimeError("HF generation requires model to be initialized.")
+            local_results = _generate_local_results_hf(
+                local_positions=local_positions,
+                local_chats=local_chats,
+                tokenizer=tokenizer,
+                model=model,
+                device=device,
+                config=config,
+                existing_responses_by_position=existing_responses,
+                shard_dir=shard_dir,
+                rank=rank,
+            )
+        _write_rank_shard(shard_dir, rank=rank, rows=local_results)
+        print(f"[rank {rank}/{world_size}] wrote shard with {len(local_results)} rows", flush=True)
+
+    if rank == 0:
+        _merge_rank_shards(
+            dataset=dataset,
+            output_path=output_path,
+            shard_dir=shard_dir,
+            world_size=world_size,
+            total_rows=total_rows,
+            timeout_sec=_merge_timeout_sec(config),
+            poll_interval_sec=_poll_interval_sec(config),
+        )
+
+
+def _run_token(*, dataset_idx: int) -> str:
+    return ":".join(
+        [
+            os.environ.get("TORCHRUN_DP_RUN_ID", ""),
+            os.environ.get("TORCHELASTIC_RUN_ID", ""),
+            os.environ.get("MASTER_ADDR", ""),
+            os.environ.get("MASTER_PORT", ""),
+            str(dataset_idx),
+        ]
+    )
 
 
 def shard_generation_requests(requests: list[Any], *, rank: int, world_size: int) -> list[Any]:
@@ -1004,6 +1084,26 @@ def _wait_for_files(paths: list[Path], *, timeout_sec: float, poll_interval_sec:
             raise TimeoutError(f"Timed out waiting for shard files: {missing_str}")
         time.sleep(poll_interval_sec)
         missing = [path for path in paths if not path.exists()]
+
+
+def _wait_for_ready_token(path: Path, *, token: str, timeout_sec: float, poll_interval_sec: float) -> None:
+    """Wait until rank 0 has prepared this dataset shard directory for this run.
+
+    Checking the file contents, not only existence, avoids a stale _READY file
+    from a previous invocation making non-zero ranks start before rank 0 has
+    removed stale .done files.
+    """
+    start_time = time.monotonic()
+    while True:
+        if path.exists():
+            try:
+                if path.read_text(encoding="utf-8").strip() == token:
+                    return
+            except OSError:
+                pass
+        if time.monotonic() - start_time > timeout_sec:
+            raise TimeoutError(f"Timed out waiting for ready file: {path}")
+        time.sleep(poll_interval_sec)
 
 
 def _merge_timeout_sec(config: DictConfig) -> float:

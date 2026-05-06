@@ -139,43 +139,47 @@ run_generation_for_k() {
   echo "[INFO] Temp parquet path(s) for k=${k}: ${TMP_PATHS[*]}"
   echo "[INFO] Output parquet path(s) for k=${k}: ${OUTPUT_PARQUET_PATHS[*]}"
 
-  # main_generation_torchrun_dp only accepts one data.path/data.output_path,
-  # so generate each dataset separately under torchrun data parallelism.
-  for idx in "${!TASKS[@]}"; do
-    t=${TASKS[$idx]}
-    data_path=${DATA_PATHS[$idx]}
-    tmp=${TMP_PATHS[$idx]}
+  # Build Hydra list args: data.paths=["p1","p2"], data.output_paths=["o1","o2"]
+  paths_arg="["
+  outs_arg="["
+  for p in "${DATA_PATHS[@]}"; do paths_arg+="\"${p}\","; done
+  for o in "${TMP_PATHS[@]}"; do outs_arg+="\"${o}\","; done
+  paths_arg=${paths_arg%,}
+  outs_arg=${outs_arg%,}
+  paths_arg+="]"
+  outs_arg+="]"
 
-    echo "[INFO] Generating ${t} for k=${k}: ${data_path} -> ${tmp}"
-    TORCHRUN_DP_RUN_ID="${t}_${MODEL}_k${k}" \
-    torchrun --standalone --nproc_per_node=${NUM_ACCELERATORS} \
-      -m verl.trainer.main_generation_torchrun_dp \
-      trainer.nnodes=${NNODES} \
-      trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
-      data.path="${data_path}" \
-      data.output_path="${tmp}" \
-      data.prompt_key=prompt \
-      data.n_samples=${k} \
-      data.batch_size=${HF_GEN_BATCH_SIZE} \
-      model.path="${CHECKPOINT_PATH}" \
-      +data.trust_remote_code=True \
-      rollout.temperature=${temperature} \
-      +rollout.backend=${GENERATION_BACKEND} \
-      rollout.name=${GENERATION_BACKEND} \
-      rollout.dtype=${VLLM_DTYPE} \
-      rollout.gpu_memory_utilization=${VLLM_GPU_MEMORY_UTILIZATION} \
-      rollout.tensor_model_parallel_size=${VLLM_TENSOR_MODEL_PARALLEL_SIZE} \
-      rollout.max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS} \
-      rollout.max_num_seqs=${VLLM_MAX_NUM_SEQS} \
-      rollout.enforce_eager=${VLLM_ENFORCE_EAGER} \
-      rollout.enable_chunked_prefill=${VLLM_ENABLE_CHUNKED_PREFILL} \
-      +rollout.isolate_cuda_visible_devices=True \
-      rollout.top_p=1.0 \
-      rollout.top_k=-1 \
-      rollout.prompt_length=1024 \
-      rollout.response_length=8192 \
-      rollout.mode=sync
+  echo "[INFO] Generating all datasets for k=${k} in one torchrun."
+  TORCHRUN_DP_RUN_ID="${MODEL}_k${k}_$(date +%s)" \
+  torchrun --standalone --nproc_per_node=${NUM_ACCELERATORS} \
+    -m verl.trainer.main_generation_torchrun_dp \
+    trainer.nnodes=${NNODES} \
+    trainer.n_gpus_per_node=${NUM_ACCELERATORS} \
+    +data.paths=${paths_arg} \
+    +data.output_paths=${outs_arg} \
+    data.prompt_key=prompt \
+    data.n_samples=${k} \
+    data.batch_size=${HF_GEN_BATCH_SIZE} \
+    model.path="${CHECKPOINT_PATH}" \
+    +data.trust_remote_code=True \
+    rollout.temperature=${temperature} \
+    +rollout.backend=${GENERATION_BACKEND} \
+    rollout.name=${GENERATION_BACKEND} \
+    rollout.dtype=${VLLM_DTYPE} \
+    rollout.gpu_memory_utilization=${VLLM_GPU_MEMORY_UTILIZATION} \
+    rollout.tensor_model_parallel_size=${VLLM_TENSOR_MODEL_PARALLEL_SIZE} \
+    rollout.max_num_batched_tokens=${VLLM_MAX_NUM_BATCHED_TOKENS} \
+    rollout.max_num_seqs=${VLLM_MAX_NUM_SEQS} \
+    rollout.enforce_eager=${VLLM_ENFORCE_EAGER} \
+    rollout.enable_chunked_prefill=${VLLM_ENABLE_CHUNKED_PREFILL} \
+    +rollout.isolate_cuda_visible_devices=True \
+    rollout.top_p=1.0 \
+    rollout.top_k=-1 \
+    rollout.prompt_length=1024 \
+    rollout.response_length=8192 \
+    rollout.mode=sync
 
+  for tmp in "${TMP_PATHS[@]}"; do
     wait_for_file_ready "${tmp}"
   done
 }
