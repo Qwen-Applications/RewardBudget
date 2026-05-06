@@ -7,6 +7,12 @@ set -e
 
 TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp" # OlympiadBench_math_en_comp, omni_math
 MODEL="$1"
+
+if [ -z "${MODEL}" ]; then
+    echo "Usage: $0 <model>"
+    exit 1
+fi
+
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
 TMP_DIR="/root/tmp"
@@ -47,6 +53,14 @@ export VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-True}
 export VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-True}
 export HF_GEN_BATCH_SIZE=${HF_GEN_BATCH_SIZE:-16}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
+# W&B parquet artifact upload. Set WANDB_PROJECT to enable by default.
+export WANDB_PROJECT=${WANDB_PROJECT:-rb_generations}
+export WANDB_PARQUET_UPLOAD=${WANDB_PARQUET_UPLOAD:-${WANDB_PROJECT:+1}}
+export WANDB_PARQUET_UPLOAD=${WANDB_PARQUET_UPLOAD:-0}
+export WANDB_GARO_RUN_ID=${WANDB_GARO_RUN_ID:-garo-eval-${MODEL}-${PRIMUS_SOURCE_CHECKPOINT_ITERATION_DIRNAME:-unknown}-$(date +%Y%m%d%H%M%S)-$$}
+export WANDB_GARO_RUN_NAME="${WANDB_GARO_RUN_NAME:-GARO eval ${MODEL} ${PRIMUS_SOURCE_CHECKPOINT_ITERATION_DIRNAME:-unknown}}"
+export WANDB_GARO_ARTIFACT_TYPE=${WANDB_GARO_ARTIFACT_TYPE:-garo-generation-parquet}
 
 echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL"
 echo "[INFO] Data path(s): ${DATA_PATHS[*]}"
@@ -112,6 +126,74 @@ wait_for_file_ready() {
 
   echo "[ERROR] File not ready after waiting: ${file_path}"
   return 1
+}
+
+upload_parquet_to_wandb() {
+  local file_path="$1"
+  local task="$2"
+  local k="$3"
+
+  if [ "${WANDB_PARQUET_UPLOAD}" != "1" ]; then
+    echo "[INFO] WANDB_PARQUET_UPLOAD=${WANDB_PARQUET_UPLOAD}; skip W&B upload for ${file_path}"
+    return 0
+  fi
+  if [ -z "${WANDB_PROJECT:-}" ]; then
+    echo "[ERROR] WANDB_PROJECT must be set when WANDB_PARQUET_UPLOAD=1"
+    return 1
+  fi
+
+  echo "[INFO] Uploading parquet to W&B: ${file_path}"
+  python3 - "${file_path}" "${task}" "${MODEL}" "${k}" "${CHECKPOINT_PATH}" <<'PY'
+import os
+import re
+import sys
+
+import wandb
+
+file_path, task, model, k, checkpoint_path = sys.argv[1:6]
+
+def sanitize(value, max_len=128):
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip(".-")
+    return (value or "unknown")[:max_len]
+
+project = os.environ["WANDB_PROJECT"]
+entity = os.environ.get("WANDB_ENTITY") or None
+run_id = sanitize(os.environ.get("WANDB_GARO_RUN_ID", "garo-eval"), max_len=64)
+run_name = os.environ.get("WANDB_GARO_RUN_NAME") or f"GARO eval {model}"
+artifact_type = os.environ.get("WANDB_GARO_ARTIFACT_TYPE", "garo-generation-parquet")
+artifact_name = sanitize(f"garo-{task}-{model}-k{k}-parquet")
+
+with wandb.init(
+    project=project,
+    entity=entity,
+    id=run_id,
+    name=run_name,
+    resume="allow",
+    job_type="garo-eval-upload",
+    config={
+        "model": model,
+        "checkpoint_path": checkpoint_path,
+        "generation_backend": os.environ.get("GENERATION_BACKEND"),
+    },
+) as run:
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type=artifact_type,
+        metadata={
+            "task": task,
+            "model": model,
+            "k": int(k),
+            "checkpoint_path": checkpoint_path,
+            "local_path": file_path,
+            "num_bytes": os.path.getsize(file_path),
+            "generation_backend": os.environ.get("GENERATION_BACKEND"),
+        },
+    )
+    artifact.add_file(file_path, name=os.path.basename(file_path))
+    run.log_artifact(artifact, aliases=["latest", f"k{k}", sanitize(task)])
+
+print(f"[INFO] W&B artifact logged: {artifact_name}")
+PY
 }
 
 build_paths_for_k() {
@@ -180,8 +262,11 @@ run_generation_for_k() {
     rollout.response_length=8192 \
     rollout.mode=sync
 
-  for out_parquet in "${OUTPUT_PARQUET_PATHS[@]}"; do
+  for idx in "${!OUTPUT_PARQUET_PATHS[@]}"; do
+    out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
+    t=${TASKS[$idx]}
     wait_for_file_ready "${out_parquet}"
+    upload_parquet_to_wandb "${out_parquet}" "${t}" "${k}"
   done
 }
 
