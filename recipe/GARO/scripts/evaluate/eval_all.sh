@@ -8,7 +8,7 @@ set -e
 wandb login REDACTED_WANDB_KEY
 
 TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp" # OlympiadBench_math_en_comp, omni_math
-MODEL="$1"
+MODEL="${1:-${MODEL:-}}"
 
 if [ -z "${MODEL}" ]; then
     echo "Usage: $0 <model>"
