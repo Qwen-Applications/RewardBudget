@@ -45,6 +45,8 @@ export VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-1024}
 export VLLM_TENSOR_MODEL_PARALLEL_SIZE=${VLLM_TENSOR_MODEL_PARALLEL_SIZE:-1}
 export VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-True}
 export VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-True}
+export HF_GEN_BATCH_SIZE=${HF_GEN_BATCH_SIZE:-1}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 echo "[INFO] Running evaluation for task(s): ${TASKS[*]}, model: $MODEL"
 echo "[INFO] Data path(s): ${DATA_PATHS[*]}"
@@ -154,6 +156,7 @@ run_generation_for_k() {
       data.output_path="${tmp}" \
       data.prompt_key=prompt \
       data.n_samples=${k} \
+      data.batch_size=${HF_GEN_BATCH_SIZE} \
       model.path="${CHECKPOINT_PATH}" \
       +data.trust_remote_code=True \
       rollout.temperature=${temperature} \
