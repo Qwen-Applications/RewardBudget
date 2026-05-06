@@ -5,7 +5,7 @@
 
 set -e
 
-TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp,OlympiadBench_math_en_comp" # omni_math
+TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp" # OlympiadBench_math_en_comp, omni_math
 MODEL="$1"
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
