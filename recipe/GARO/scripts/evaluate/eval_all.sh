@@ -5,6 +5,10 @@
 
 set -e
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+cd "${REPO_ROOT}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
 wandb login REDACTED_WANDB_KEY
 
 TASK_LIST="amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp" # OlympiadBench_math_en_comp, omni_math
