@@ -242,10 +242,10 @@ build_paths_for_k() {
   EVAL_JSONL_PATHS=()
 
   for t in "${TASKS[@]}"; do
-    TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_k${k}.parquet")
-    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.parquet")
-    EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.eval.json")
-    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.eval.details.jsonl")
+    TMP_PATHS+=("${TMP_DIR}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.parquet")
+    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.parquet")
+    EVAL_PATHS+=("${OUTPUT_PATH}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.eval.json")
+    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.eval.details.jsonl")
   done
 }
 
