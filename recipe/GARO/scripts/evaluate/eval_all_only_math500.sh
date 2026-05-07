@@ -226,12 +226,14 @@ run_generation_for_k() {
   echo "[INFO] Generating responses for k=${k}, temperature=${temperature}"
   echo "[INFO] Shard root for k=${k}: ${TMP_DIR}"
   echo "[INFO] Output parquet path(s) for k=${k}: ${OUTPUT_PARQUET_PATHS[*]}"
+  echo "[INFO] Local temp parquet path(s) for k=${k}: ${TMP_PATHS[*]}"
 
   # Build Hydra list args: data.paths=["p1","p2"], data.output_paths=["o1","o2"]
+  # Write parquet locally first. Direct pyarrow/pandas writes to /primus_oss can leave 0-byte files.
   paths_arg="["
   outs_arg="["
   for p in "${DATA_PATHS[@]}"; do paths_arg+="\"${p}\","; done
-  for o in "${OUTPUT_PARQUET_PATHS[@]}"; do outs_arg+="\"${o}\","; done
+  for o in "${TMP_PATHS[@]}"; do outs_arg+="\"${o}\","; done
   paths_arg=${paths_arg%,}
   outs_arg=${outs_arg%,}
   paths_arg+="]"
@@ -269,8 +271,12 @@ run_generation_for_k() {
     rollout.mode=sync
 
   for idx in "${!OUTPUT_PARQUET_PATHS[@]}"; do
+    tmp_parquet=${TMP_PATHS[$idx]}
     out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
     t=${TASKS[$idx]}
+    wait_for_file_ready "${tmp_parquet}"
+    echo "[INFO] Copying parquet to output: ${tmp_parquet} -> ${OUTPUT_PATH}"
+    rclone copy "${tmp_parquet}" "${OUTPUT_PATH}" --progress --transfers=80
     wait_for_file_ready "${out_parquet}"
     upload_parquet_to_wandb "${out_parquet}" "${t}" "${k}"
   done
@@ -285,12 +291,13 @@ run_evaluation_for_k() {
   for idx in "${!TASKS[@]}"; do
     t=${TASKS[$idx]}
     out_parquet=${OUTPUT_PARQUET_PATHS[$idx]}
+    tmp_parquet=${TMP_PATHS[$idx]}
     evalp=${EVAL_PATHS[$idx]}
     evalj=${EVAL_JSONL_PATHS[$idx]}
 
-    echo "[INFO] Evaluating ${t}, k=${k}: ${out_parquet}"
+    echo "[INFO] Evaluating ${t}, k=${k}: ${tmp_parquet}"
     python3 recipe/GARO/scripts/evaluate/evaluation.py \
-      --file "${out_parquet}" --k "${k}" \
+      --file "${tmp_parquet}" --k "${k}" \
       --output "${evalp}" \
       --output_jsonl "${evalj}" \
       --qwen_ip "${QWEN_IP}"
