@@ -14,7 +14,7 @@ wandb login REDACTED_WANDB_KEY
 TASK_LIST="math500" # OlympiadBench_math_en_comp, omni_math
 MODEL="${1:-${MODEL:-}}"
 
-HALF="${2:-${HALF:-}}"
+HALF="${2:-${HALF:-first}}"
 HALF="${HALF#half=}"
 
 if [ -z "${MODEL}" ]; then
