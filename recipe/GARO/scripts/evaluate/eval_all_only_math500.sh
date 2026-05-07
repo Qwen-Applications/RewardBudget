@@ -14,10 +14,19 @@ wandb login REDACTED_WANDB_KEY
 TASK_LIST="math500" # OlympiadBench_math_en_comp, omni_math
 MODEL="${1:-${MODEL:-}}"
 
+HALF="${2:-${HALF:-}}"
+HALF="${HALF#half=}"
+
 if [ -z "${MODEL}" ]; then
-    echo "Usage: $0 <model>"
+    echo "Usage: $0 <model> [half=first|half=last]"
     exit 1
 fi
+
+case "${HALF}" in
+  ""|first|last) ;;
+  *) echo "Error: half must be one of: first, last"; exit 1 ;;
+esac
+HALF_SUFFIX="${HALF:+_${HALF}}"
 
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
@@ -37,7 +46,30 @@ OUTPUT_PATH="${OUTPUT_DIR}/GARO_garo/"
 
 DATA_PATHS=()
 for t in "${TASKS[@]}"; do
-  DATA_PATHS+=("${DATA_DIR}/GARO/test_data/${t}.parquet")
+  src_path="${DATA_DIR}/GARO/test_data/${t}.parquet"
+  if [ -n "${HALF}" ]; then
+    mkdir -p "${TMP_DIR}"
+    sliced_path="${TMP_DIR}/${t}_${HALF}.parquet"
+    python3 - "${src_path}" "${sliced_path}" "${HALF}" <<'PY'
+import sys
+import pyarrow.parquet as pq
+
+src, dst, half = sys.argv[1:4]
+table = pq.read_table(src)
+mid = table.num_rows // 2
+if half == "first":
+    table = table.slice(0, mid)
+elif half == "last":
+    table = table.slice(mid)
+else:
+    raise ValueError(f"bad half={half}")
+pq.write_table(table, dst)
+print(f"[INFO] Wrote {half} half: {dst} ({table.num_rows} rows)")
+PY
+    DATA_PATHS+=("${sliced_path}")
+  else
+    DATA_PATHS+=("${src_path}")
+  fi
 done
 
 CHECKPOINT_DIR=${PRIMUS_SOURCE_CHECKPOINT_DIR}/${PRIMUS_SOURCE_CHECKPOINT_ITERATION_DIRNAME}
