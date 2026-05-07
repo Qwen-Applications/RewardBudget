@@ -14,19 +14,20 @@ wandb login REDACTED_WANDB_KEY
 TASK_LIST="math500" # OlympiadBench_math_en_comp, omni_math
 MODEL="${1:-${MODEL:-}}"
 
-HALF="${2:-${HALF:-second}}"
+HALF="${2:-${HALF:-last}}"
 HALF="${HALF#half=}"
 
-if [ -z "${MODEL}" ]; then
-    echo "Usage: $0 <model> [half=first|half=last]"
-    exit 1
-fi
-
 case "${HALF}" in
-  ""|first|last|second) ;;
+  first|last|second) ;;
   *) echo "Error: half must be one of: first, last, second"; exit 1 ;;
 esac
-HALF_SUFFIX="${HALF:+_${HALF}}"
+
+# second 作为 last 的别名
+if [ "${HALF}" = "second" ]; then
+  HALF="last"
+fi
+
+HALF_SUFFIX="_${HALF}"
 
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
@@ -242,10 +243,10 @@ build_paths_for_k() {
   EVAL_JSONL_PATHS=()
 
   for t in "${TASKS[@]}"; do
-    TMP_PATHS+=("${TMP_DIR}/${t}_${MODEL}_k${k}.parquet")
-    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.parquet")
-    EVAL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.eval.json")
-    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}_${MODEL}_k${k}.eval.details.jsonl")
+    TMP_PATHS+=("${TMP_DIR}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.parquet")
+    OUTPUT_PARQUET_PATHS+=("${OUTPUT_PATH}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.parquet")
+    EVAL_PATHS+=("${OUTPUT_PATH}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.eval.json")
+    EVAL_JSONL_PATHS+=("${OUTPUT_PATH}/${t}${HALF_SUFFIX}_${MODEL}_k${k}.eval.details.jsonl")
   done
 }
 
@@ -310,7 +311,7 @@ run_generation_for_k() {
     echo "[INFO] Copying parquet to output: ${tmp_parquet} -> ${OUTPUT_PATH}"
     rclone copy "${tmp_parquet}" "${OUTPUT_PATH}" --progress --transfers=80
     wait_for_file_ready "${out_parquet}"
-    upload_parquet_to_wandb "${out_parquet}" "${t}" "${k}"
+    upload_parquet_to_wandb "${out_parquet}" "${t}${HALF_SUFFIX}" "${k}"
   done
 }
 
