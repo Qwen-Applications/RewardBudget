@@ -19,9 +19,9 @@ cd "${REPO_ROOT}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-TASK_LIST="${TASK_LIST:-amc23,aime24,aime25,math500,OlympiadBench_physics_en_comp}"
+TASK_LIST="${TASK_LIST:-amc23,aime24,aime25}"
 
-MODEL_NAME="${1:-${MODEL_NAME:-klcov_llama_1500}}"
+MODEL_NAME="${1:-${MODEL_NAME:-klcov_qwen_800}}"
 K="${2:-${K:-8}}"
 
 GEN_DIR="${GEN_DIR:-recipe/GARO/generations}"
