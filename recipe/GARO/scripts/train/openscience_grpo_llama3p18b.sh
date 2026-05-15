@@ -43,7 +43,7 @@ else
         actor_rollout_ref.model.trust_remote_code=True \
         actor_rollout_ref.actor.strategy=fsdp \
         actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-        actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+        actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
         actor_rollout_ref.actor.use_dynamic_bsz=False \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.kl_loss_coef=0.0 \
@@ -59,14 +59,14 @@ else
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
         actor_rollout_ref.actor.checkpoint.save_contents='["model","optimizer","extra","hf_model"]' \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \
-        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+        actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
         actor_rollout_ref.rollout.name=vllm \
         actor_rollout_ref.rollout.temperature=1.0 \
         actor_rollout_ref.rollout.top_k=-1 \
         actor_rollout_ref.rollout.top_p=1.0 \
         actor_rollout_ref.rollout.dtype=bfloat16 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+        actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
         actor_rollout_ref.rollout.do_sample=True \
         actor_rollout_ref.rollout.n=8 \
         actor_rollout_ref.rollout.calculate_log_probs=False \
