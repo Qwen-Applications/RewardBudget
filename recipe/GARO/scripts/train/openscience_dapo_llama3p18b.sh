@@ -38,7 +38,7 @@ else
         data.max_response_length=4096 \
         data.train_batch_size=32 \
         data.gen_batch_size=96 \
-        actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/Llama3.1-8B-Instruct" \
+        actor_rollout_ref.model.path="${PRIMUS_SOURCE_CHECKPOINT_DIR}/${PRIMUS_SOURCE_CHECKPOINT_ITERATION_DIRNAME}" \
         actor_rollout_ref.model.enable_gradient_checkpointing=True \
         actor_rollout_ref.model.enable_activation_offload=False \
         actor_rollout_ref.model.trust_remote_code=True \
