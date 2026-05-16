@@ -119,12 +119,12 @@ def main():
     # MMLU-Pro (10 options)
     # Prefer TIGER-Lab/MMLU-Pro; keep a fallback for environments without it.
     try:
-        print("Loading TIGER-Lab/MMLU-Pro (split='test')...")
-        ds = load_dataset("TIGER-Lab/MMLU-Pro", split="test")
+        print("Loading TIGER-Lab/MMLU-Pro (split='validation')...")
+        ds = load_dataset("TIGER-Lab/MMLU-Pro", split="validation")
     except Exception as e:
         print(f"[WARN] Failed to load TIGER-Lab/MMLU-Pro: {e}")
-        print("Falling back to cais/mmlu (config='all', split='test')... (NOTE: this is NOT MMLU-Pro)")
-        ds = load_dataset("cais/mmlu", "all", split="test")
+        print("Falling back to cais/mmlu (config='all', split='validation')... (NOTE: this is NOT MMLU-Pro)")
+        ds = load_dataset("cais/mmlu", "all", split="validation")
 
     records = []
     for ex in ds:
