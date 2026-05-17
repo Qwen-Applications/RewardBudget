@@ -10,9 +10,7 @@ import pyarrow.parquet as pq
 from datasets import load_dataset
 
 
-PROMPT_PREFIX = (
-    r"Solve the following problem. Make sure to put the answer (and only answer) inside \\boxed{}. "
-)
+PROMPT_PREFIX = r"Solve the following problem. Make sure to put the answer (and only answer) inside \boxed{}. "
 
 
 def parse_args():
@@ -46,6 +44,10 @@ def make_schema():
     ])
 
 
+def has_image(ex):
+    return bool(str(ex.get("image", "")).strip())
+
+
 def main():
     args = parse_args()
 
@@ -63,7 +65,7 @@ def main():
     records = []
     for ex in ds:
         # 只保留 image 为 None 的样本
-        if ex.get("image") is not None:
+        if has_image(ex):
             continue
 
         ex_id = str(ex.get("id", ""))
@@ -85,7 +87,7 @@ def main():
             }
         )
 
-    print(f"Kept {len(records)} text-only samples (image is None).")
+    print(f"Kept {len(records)} text-only samples (image is empty).")
 
     # 写 JSONL
     with open(output_jsonl, "w", encoding="utf-8") as f:
