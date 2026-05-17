@@ -25,17 +25,25 @@ Features:
   - keep next max_valid_data valid samples as valid
   - save jsonl and parquet into train_data_dir / valid_data_dir
 """
-
+import os
 import argparse
 import json
 from pathlib import Path
 
-from datasets import load_dataset
-from transformers import AutoTokenizer
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+
+def _maybe_enable_hf_mirror(enabled: bool) -> None:
+    if enabled:
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+
+def _lazy_import_hf_dependencies():
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+    return load_dataset, AutoTokenizer
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -53,8 +61,13 @@ def parse_args():
                    help="Number of valid train samples to keep.")
     p.add_argument("--max_valid_data", type=int, default=1000,
                    help="Number of valid valid samples to keep.")
-    p.add_argument("--chunk_size", type=int, default=1024,
+    p.add_argument("--chunk_size", type=int, default=4096,
                    help="Flush parquet every N samples to limit RAM.")
+    p.add_argument(
+        "--china",
+        action="store_true",
+        help="Use Hugging Face mirror endpoint https://hf-mirror.com.",
+    )
     return p.parse_args()
 
 
@@ -103,6 +116,8 @@ def _get_prompt_len(tokenizer, prompt_messages, fallback_text: str):
 
 def main():
     args = parse_args()
+    _maybe_enable_hf_mirror(args.china)
+    load_dataset, AutoTokenizer = _lazy_import_hf_dependencies()
 
     train_dir = Path(args.train_data_dir)
     valid_dir = Path(args.valid_data_dir)
@@ -149,6 +164,11 @@ def main():
             ]
 
             # token length filtering
+            # 粗筛，避免超长文本进入 tokenizer
+            if len(prompt_text) > args.max_prompt_length * 12:
+                continue
+            if len(response) > args.max_response_length * 12:
+                continue
             prompt_len = _get_prompt_len(tokenizer, prompt_messages, prompt_text)
             resp_len = len(tokenizer.encode(response, add_special_tokens=False))
             if prompt_len > args.max_prompt_length or resp_len > args.max_response_length:
