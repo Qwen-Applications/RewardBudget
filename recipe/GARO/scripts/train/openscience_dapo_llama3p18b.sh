@@ -89,7 +89,7 @@ else
         algorithm.adv_estimator=grpo \
         algorithm.ref_sync_freq=20000000 \
         algorithm.filter_groups.enable=True \
-        algorithm.filter_groups.max_num_gen_batches=10 \
+        algorithm.filter_groups.max_num_gen_batches=20 \
         algorithm.filter_groups.metric=acc \
         trainer.log_train_entropy_during_val=True \
         trainer.train_entropy_num_batches=4 \
