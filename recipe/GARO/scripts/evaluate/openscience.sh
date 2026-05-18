@@ -11,7 +11,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 wandb login REDACTED_WANDB_KEY
 
-TASK_LIST="gpqa_diamond,gpqa_extended,gpqa_main,mmlu_pro" # hle,frames,simpleqa
+TASK_LIST="gpqa_diamond,gpqa_extended,gpqa_main,mmlu_pro,openscience" # hle,frames,simpleqa
 MODEL="${1:-${MODEL:-}}"
 
 if [ -z "${MODEL}" ]; then
