@@ -21,7 +21,7 @@ fi
 
 DATA_DIR="/primus_datasets/zmy"
 OUTPUT_DIR=${PRIMUS_OUTPUT_DIR}
-TMP_DIR="~/tmp/tutu"
+TMP_DIR="/root/tmp/tutu"
 
 # Validate inputs
 if [ -z "$OUTPUT_DIR" ]; then
