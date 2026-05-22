@@ -266,8 +266,8 @@ run_generation_for_k() {
     +rollout.isolate_cuda_visible_devices=True \
     rollout.top_p=1.0 \
     rollout.top_k=-1 \
-    rollout.prompt_length=512 \
-    rollout.response_length=512 \
+    rollout.prompt_length=256 \
+    rollout.response_length=256 \
     rollout.mode=sync
 
   for idx in "${!OUTPUT_PARQUET_PATHS[@]}"; do
