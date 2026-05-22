@@ -66,6 +66,7 @@ actor_rollout_ref:
     loss_agg_mode: token-mean
     entropy_coeff: 0
     use_kl_loss: false
+    log_kl_loss: false
     use_torch_compile: true
     kl_loss_coef: 0.001
     kl_loss_type: low_var_kl

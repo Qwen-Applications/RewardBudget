@@ -48,6 +48,7 @@ else
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
         actor_rollout_ref.actor.use_dynamic_bsz=False \
         actor_rollout_ref.actor.use_kl_loss=False \
+        actor_rollout_ref.actor.log_kl_loss=True \
         actor_rollout_ref.actor.kl_loss_coef=0.0 \
         actor_rollout_ref.actor.adaptive_beta.enable=False \
         actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \

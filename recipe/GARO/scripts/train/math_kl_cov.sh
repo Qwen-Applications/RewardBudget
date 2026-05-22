@@ -46,6 +46,7 @@ else
         actor_rollout_ref.model.enable_activation_offload=False \
         actor_rollout_ref.model.trust_remote_code=True \
         actor_rollout_ref.actor.use_kl_loss=False \
+        actor_rollout_ref.actor.log_kl_loss=True \
         actor_rollout_ref.actor.kl_loss_coef=0.0 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio_high=0.2 \

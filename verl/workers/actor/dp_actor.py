@@ -521,7 +521,8 @@ class DataParallelPPOActor(BasePPOActor):
             "old_log_probs",
             "advantages",
         ]
-        if self.config.use_kl_loss:
+        should_compute_kl_loss = self.config.use_kl_loss or getattr(self.config, "log_kl_loss", False)
+        if should_compute_kl_loss:
             select_keys.append("ref_log_prob")
         # new-changes
         adaptive_beta_cfg = getattr(self.config, "adaptive_beta", None)
@@ -681,7 +682,7 @@ class DataParallelPPOActor(BasePPOActor):
                         policy_loss = pg_loss
 
                     # new-changes
-                    if self.config.use_kl_loss:
+                    if should_compute_kl_loss:
                         ref_log_prob = model_inputs["ref_log_prob"]
                         kld = kl_penalty(
                             logprob=log_prob,
@@ -699,7 +700,8 @@ class DataParallelPPOActor(BasePPOActor):
                             reported_kl_coef = self.config.kl_loss_coef
 
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
-                        policy_loss = policy_loss + kl_loss * kl_coef
+                        if self.config.use_kl_loss:
+                            policy_loss = policy_loss + kl_loss * kl_coef
 
                         micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/kl_coef"] = reported_kl_coef

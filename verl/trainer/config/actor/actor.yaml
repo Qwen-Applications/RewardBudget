@@ -80,6 +80,9 @@ entropy_coeff: 0
 # Whether to use KL loss instead of KL reward penalty. True for GRPO
 use_kl_loss: false
 
+# Whether to log actor/reference KL loss as a metric even when use_kl_loss is false
+log_kl_loss: false
+
 # Whether to use torch.compile()
 # oc.select: the default val for ref.use_torch_compile
 use_torch_compile: true

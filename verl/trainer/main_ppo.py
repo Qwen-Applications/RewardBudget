@@ -133,7 +133,11 @@ class TaskRunner:
             ray_worker_group_cls = RayWorkerGroup
             # NOTE: In new model engine, ref policy and actor rollout are in same ActorRolloutRefWorker,
             # while in legacy model engine, ref policy is in a separate ActorRolloutRefWorker.
-            if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
+            if (
+                config.algorithm.use_kl_in_reward
+                or config.actor_rollout_ref.actor.use_kl_loss
+                or config.actor_rollout_ref.actor.get("log_kl_loss", False)
+            ):
                 role = Role.ActorRolloutRef
             else:
                 role = Role.ActorRollout
@@ -253,7 +257,11 @@ class TaskRunner:
         if use_legacy_worker_impl == "disable":
             return
 
-        if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
+        if (
+            config.algorithm.use_kl_in_reward
+            or config.actor_rollout_ref.actor.use_kl_loss
+            or config.actor_rollout_ref.actor.get("log_kl_loss", False)
+        ):
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
 

@@ -314,7 +314,8 @@ class MegatronPPOActor(BasePPOActor):
             "old_log_probs",
             "advantages",
         ]
-        if self.config.use_kl_loss:
+        should_compute_kl_loss = self.config.use_kl_loss or getattr(self.config, "log_kl_loss", False)
+        if should_compute_kl_loss:
             select_keys.append("ref_log_prob")
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
@@ -494,13 +495,14 @@ class MegatronPPOActor(BasePPOActor):
             if forward_only:
                 policy_loss = torch.tensor(1.0, device=device)
             else:
-                if self.config.use_kl_loss:
+                if self.config.use_kl_loss or getattr(self.config, "log_kl_loss", False):
                     ref_log_prob = data["ref_log_prob"]
                     # compute kl loss
                     kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type)
                     kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=self.config.loss_agg_mode)
 
-                    policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+                    if self.config.use_kl_loss:
+                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                     metrics["actor/kl_loss"] = kl_loss.detach().item()
                     metrics["actor/kl_coef"] = self.config.kl_loss_coef
 

@@ -143,7 +143,11 @@ class TaskRunner:
             mapping[Role.RewardModel] = global_pool_id
 
         # reference model
-        if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
+        if (
+            config.algorithm.use_kl_in_reward
+            or config.actor_rollout_ref.actor.use_kl_loss
+            or config.actor_rollout_ref.actor.get("log_kl_loss", False)
+        ):
             role_worker_mapping[Role.RefPolicy] = ray.remote(AsyncActorRolloutRefWorker)
             mapping[Role.RefPolicy] = global_pool_id
 

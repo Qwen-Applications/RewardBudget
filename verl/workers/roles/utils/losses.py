@@ -139,7 +139,7 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         policy_loss -= entropy_coeff * entropy_loss
 
     # add kl loss
-    if config.use_kl_loss:
+    if config.use_kl_loss or getattr(config, "log_kl_loss", False):
         ref_log_prob = data["ref_log_prob"]
         # compute kl loss
         kld = kl_penalty(logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=config.kl_loss_type)
@@ -147,7 +147,8 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
             loss_mat=kld, loss_mask=response_mask, loss_agg_mode=config.loss_agg_mode, **config.global_batch_info
         )
 
-        policy_loss += kl_loss * config.kl_loss_coef
+        if config.use_kl_loss:
+            policy_loss += kl_loss * config.kl_loss_coef
         metrics["kl_loss"] = kl_loss.detach().item()
         metrics["kl_coef"] = config.kl_loss_coef
 

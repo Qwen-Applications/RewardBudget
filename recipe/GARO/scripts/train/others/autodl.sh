@@ -24,6 +24,7 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.actor.use_dynamic_bsz=False \
   actor_rollout_ref.actor.use_kl_loss=True \
+  actor_rollout_ref.actor.log_kl_loss=True \
   actor_rollout_ref.actor.kl_loss_coef=0.001 \
   actor_rollout_ref.actor.adaptive_beta.enable=True \
   actor_rollout_ref.actor.adaptive_beta.beta_min=0.0 \
