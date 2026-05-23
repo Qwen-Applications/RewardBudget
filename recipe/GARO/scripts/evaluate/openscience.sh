@@ -278,7 +278,9 @@ run_generation_for_k() {
     echo "[INFO] Copying parquet to output: ${tmp_parquet} -> ${OUTPUT_PATH}"
     rclone copy "${tmp_parquet}" "${OUTPUT_PATH}" --progress --transfers=80
     wait_for_file_ready "${out_parquet}"
-    upload_parquet_to_wandb "${out_parquet}" "${t}" "${k}"
+    if ! upload_parquet_to_wandb "${out_parquet}" "${t}" "${k}"; then
+      echo "[WARN] W&B upload failed; continuing evaluation."
+    fi
   done
 }
 
