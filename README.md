@@ -23,6 +23,8 @@ producing gentler update dynamics and an approximately log-shaped objective. Thi
 provides the verl estimator, boxed-answer reward function, and concise train/evaluation entrypoints
 for reproducing RewardBudget experiments.
 
+</div>
+
 ## 1. Setup
 
 ```bash
