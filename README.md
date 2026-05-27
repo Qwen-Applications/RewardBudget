@@ -2,6 +2,9 @@
 <h1>Reward Budgeting Reduces Premature Convergence in Reinforcement Learning for LLM Reasoning</h1>
 
 <!-- Badges -->
+<a href="https://github.com/Qwen-Applications">
+  <img src="https://img.shields.io/badge/Qwen-Applications-4433FF?style=for-the-badge" alt="Qwen Applications">
+</a>
 <a href="TODO">
 <img src="https://img.shields.io/badge/arXiv-TODO-b31b1b.svg?style=for-the-badge" alt="arXiv">
 </a>
@@ -13,7 +16,7 @@
 </a>
 
 <p align="center">
-<i><b>TODO: team / affiliation</b></i>
+  <i><b>Qwen Large Model Application Team, Alibaba</b></i>
 </p>
 
 RewardBudget is a plug-and-play RL recipe for LLM reasoning that mitigates premature
