@@ -21,7 +21,7 @@ BASENAME = "dapo_math_17k"
 def parse_args():
     p = argparse.ArgumentParser()
 
-    # ====== 输出路径相关 ======
+    # ====== output paths ======
     p.add_argument(
         "--train_data_dir",
         type=str,
@@ -35,7 +35,7 @@ def parse_args():
         help="Dir to save valid jsonl/parquet.",
     )
 
-    # ====== tokenizer & 长度控制 ======
+    # ====== tokenizer and length control ======
     p.add_argument(
         "--tokenizer",
         type=str,
@@ -94,10 +94,10 @@ def is_int(label: str):
 
 def build_record(prompt_messages: List[Dict[str, Any]], label_text: str) -> Dict[str, Any]:
     """
-    将原始 example 映射为目标结构。
-    原始字段：prompt: chat template (list of dict), label: str
+    Map a raw example into the target structure.
+    Raw fields: prompt: chat template (list of dict), label: str
 
-    输出：
+    Output:
       prompt: chat template
       response: ""
       reward_model.ground_truth: label
@@ -113,7 +113,7 @@ def build_record(prompt_messages: List[Dict[str, Any]], label_text: str) -> Dict
 
 def _prompt_token_len(tokenizer, prompt_messages: List[Dict[str, Any]], fallback_text: str) -> int:
     """
-    优先按 chat_template 计算长度；失败则回退到纯文本编码。
+    Prefer chat_template-based length calculation; fall back to plain-text encoding on failure.
     """
     if hasattr(tokenizer, "apply_chat_template"):
         try:
@@ -141,8 +141,8 @@ def flush_buffer_to_parquet(
     parquet_path: str,
 ) -> pq.ParquetWriter:
     """
-    将当前 buffer 写入 parquet，并清空 buffer。
-    使用同一个 ParquetWriter，多次写入不同 row group。
+    Write the current buffer to parquet and clear it.
+    Reuse the same ParquetWriter to write multiple row groups.
     """
     if not buffer:
         return writer
@@ -283,7 +283,7 @@ def main():
         train_f.close()
         valid_f.close()
 
-    # ====== 打印总结 ======
+    # ====== print summary ======
     print("\n[STATS]")
     print(f"  Total examples seen:         {total_seen}")
     print(f"  Kept after length filter:    {total_kept}")

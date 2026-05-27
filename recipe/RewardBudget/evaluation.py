@@ -32,7 +32,7 @@ from recipe.RewardBudget.reward import compute_score
 # =====================
 # 1) data_source routing
 # =====================
-# 在 LOCAL_SOURCES 里面的，走 exact-match；其他的走 API
+# Use exact-match for LOCAL_SOURCES; use the API judge for all other data sources.
 LOCAL_SOURCES = {
     "gpqa_diamond",
     "gpqa_main",
@@ -41,6 +41,7 @@ LOCAL_SOURCES = {
     "amc23",
     "aime24",
     "aime25",
+    "math500",
 }
 
 
@@ -48,12 +49,12 @@ LOCAL_SOURCES = {
 # 2) DDP helpers
 # =====================
 def is_main_process() -> bool:
-    """只在未初始化 DDP 或 rank0 时返回 True。"""
+    """Return True when DDP is not initialized or on rank 0."""
     return (not torch.distributed.is_initialized()) or torch.distributed.get_rank() == 0
 
 
 def local_mkdir(path: str) -> None:
-    """只在 main process 创建目录，然后所有 rank 同步一下。"""
+    """Create the directory on the main process, then synchronize all ranks."""
     if not path:
         return
     if is_main_process():

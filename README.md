@@ -1,5 +1,5 @@
 <div align="center">
-<h1>RewardBudget</h1>
+<h1>Reward Budgeting Reduces Premature Convergence in Reinforcement Learning for LLM Reasoning</h1>
 
 <!-- Badges -->
 <a href="TODO">
@@ -16,7 +16,7 @@
 <i><b>TODO: team / affiliation</b></i>
 </p>
 
-RewardBudget is a verl-based RL training recipe for reasoning models. To use the method, set
+RewardBudget is a verl-based RL training recipe. To use the method, set
 <code>algorithm.adv_estimator=reward_budget</code>. The released code keeps the core estimator,
 the boxed-answer reward function, and concise train/evaluation entrypoints.
 </div>
@@ -33,14 +33,32 @@ Install the rollout backend you plan to use, such as vLLM or SGLang, following t
 
 ## 2. Data Format
 
-Prepare train/validation/evaluation data as verl-compatible parquet files:
+Prepare train/validation/evaluation data as verl-compatible parquet files. Each row should use the following schema:
 
 | Column | Type | Description |
 |---|---|---|
-| `prompt` | list of chat messages | Usually `[{"role": "user", "content": "..."}]` |
-| `reward_model` | dict | Must include `{"ground_truth": "..."}` |
-| `data_source` | string | Dataset name used by reward/evaluation routing |
-| `response` | string, optional | Needed only for SFT-style warm starts |
+| `prompt` | list of chat messages | A chat-style prompt, usually one user message. |
+| `response` | string, optional | Existing model response or an empty string for SFT-style warm starts. |
+| `reward_model` | dict | Must include `{"ground_truth": "..."}`. |
+| `data_source` | string | Dataset name used by reward/evaluation routing, such as `OpenMath`, `amc23`, or `math500`. |
+| `ability` | string | Task category, such as `math` or `physics`. |
+
+Example row:
+
+```json
+{
+  "prompt": [
+    {
+      "role": "user",
+      "content": "Solve the following problem. Make sure to put the answer (and only answer) inside \\boxed{}. What is 1+1?"
+    }
+  ],
+  "response": "\nOkay, let's see. I need to find the sum of 1 and 1. The answer is \\boxed{2}.",
+  "reward_model": {"ground_truth": "2"},
+  "data_source": "OpenMath",
+  "ability": "math"
+}
+```
 
 For the default reward in `recipe/RewardBudget/reward.py`, model outputs should put the final answer in `\boxed{...}`.
 

@@ -123,9 +123,9 @@ class FSDPSFTTrainer:
         self.val_pass1_dataset = None
         val_pass1_parquet = getattr(self.config.trainer, "val_pass1_parquet", None)
         if val_pass1_parquet is not None:
-            # 这里假定 val_pass1_parquet 本身就是本地路径（绝对/相对都可以）
+            # Assume val_pass1_parquet is already a local path, either absolute or relative.
             ds = load_dataset("parquet", data_files={"val_pass1": val_pass1_parquet})
-            # ds["val_pass1"] 是一个 HF Dataset，每条样本应包含：
+            # ds["val_pass1"] is an HF Dataset, and each sample should contain:
             #   - "prompt": str
             #   - "reward_model[ground_truth]": str
             self.val_pass1_dataset = ds["val_pass1"]
@@ -701,18 +701,18 @@ class FSDPSFTTrainer:
     # Compute pass@1 accuracy on a separate parquet validation file.
     def _compute_val_pass_at_1_from_parquet(self):
         """
-        使用单独的 parquet 验证文件计算 pass@1 accuracy（greedy decoding）：
+        Compute pass@1 accuracy with greedy decoding on a separate validation parquet file.
 
-        parquet 每条样本字段：
+        Fields required for each parquet sample:
         - "prompt": str
-        - "reward_model[ground_truth]": str  （单个答案，和 compute_score 使用的格式匹配）
+        - "reward_model[ground_truth]": str (a single answer matching the format used by compute_score)
 
-        做法：
-        - 所有 GPU 共同遍历整个 val_pass1_dataset，每个 rank 处理一部分 index: range(rank, N, world_size)
-        - 对 prompt 做 tokenize + padding，调用 generate(..., do_sample=False)
-        - 只取新生成的 token 解码为 solution_str
-        - 与 ground_truth 用 compute_score(...) 计算 0/1 reward
-        - 最后在所有 rank 上 all_reduce，得到全局 pass@1
+        Procedure:
+        - All GPUs iterate over the full val_pass1_dataset, and each rank handles its own index slice: range(rank, N, world_size)
+        - Tokenize and pad the prompt, then call generate(..., do_sample=False)
+        - Decode only the newly generated tokens into solution_str
+        - Compare with ground_truth via compute_score(...) to get a 0/1 reward
+        - Finally, all_reduce across ranks to get global pass@1
         """
         if self.val_pass1_dataset is None:
             return None
@@ -729,7 +729,7 @@ class FSDPSFTTrainer:
         max_new_tokens = getattr(self.config.trainer, "val_pass1_max_new_tokens", 256)
         data_source = getattr(self.config.trainer, "val_pass1_data_source", "default")
 
-        # FSDP unwrap 以便调用 generate
+        # Unwrap FSDP so generate can be called.
         model_for_gen = self.fsdp_model
         try:
             from torch.distributed.fsdp import FullyShardedDataParallel as _FSDP_cls  # type: ignore
@@ -768,7 +768,7 @@ class FSDPSFTTrainer:
                 )
 
             for i, out_ids in enumerate(outputs):
-                # prompt 长度 = attention_mask 里 1 的个数
+                # prompt length = number of 1s in attention_mask
                 L_prompt = int(attention_mask[i].sum().item())
                 gen_tokens = out_ids[L_prompt:]
                 solution_str = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
@@ -785,7 +785,7 @@ class FSDPSFTTrainer:
         batch_prompts: list[str] = []
         batch_gts: list[str] = []
 
-        # 每个 rank 处理自己的切片
+        # Each rank processes its own slice.
         for idx in range(rank, num_examples, world_size):
             row = dataset[int(idx)]
             prompt = row["prompt"]
@@ -798,7 +798,7 @@ class FSDPSFTTrainer:
                 batch_prompts.clear()
                 batch_gts.clear()
 
-        # 处理最后一个不满 batch
+        # Process the final partial batch.
         _flush_batch(batch_prompts, batch_gts)
         batch_prompts.clear()
         batch_gts.clear()
