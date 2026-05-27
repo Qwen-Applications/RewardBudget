@@ -16,10 +16,12 @@
 <i><b>TODO: team / affiliation</b></i>
 </p>
 
-RewardBudget is a verl-based RL training recipe. To use the method, set
-<code>algorithm.adv_estimator=reward_budget</code>. The released code keeps the core estimator,
-the boxed-answer reward function, and concise train/evaluation entrypoints.
-</div>
+RewardBudget is a plug-and-play RL recipe for LLM reasoning that mitigates premature
+convergence by regulating algorithm-induced sharpening rather than explicitly preserving entropy.
+It assigns each prompt a fixed reward budget and redistributes that budget among correct rollouts,
+producing gentler update dynamics and an approximately log-shaped objective. This repository
+provides the verl estimator, boxed-answer reward function, and concise train/evaluation entrypoints
+for reproducing RewardBudget experiments.
 
 ## 1. Setup
 
@@ -124,12 +126,6 @@ RewardBudget/
 |-- verl/trainer/ppo/core_algos.py        # RewardBudget estimator registration
 `-- verl/                                 # Upstream verl training stack
 ```
-
-## 6. Notes
-
-- This repository is based on verl and keeps the upstream Apache 2.0 license.
-- Paper URL, final GitHub URL, released checkpoints, and exact reproduction dataset links are TODO.
-- Historical experimental branches, adaptive beta, and periodic reference-model sync are not part of the release path.
 
 ## Citation
 
