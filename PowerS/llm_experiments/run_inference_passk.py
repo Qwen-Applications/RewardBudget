@@ -21,16 +21,16 @@ Outputs:
       <output_dir>/<model_tag>/passk_summary.json
       and (if 2+ models) <output_dir>/passk_summary.multi_models.json
 
-  - verl backend (matching recipe/GARO/scripts/evaluate/eval_all.sh):
-      <output_dir>/GARO/<dataset>_<run_tag>.parquet
-      <output_dir>/GARO/<dataset>_<run_tag>.eval.json
-      <output_dir>/GARO/<dataset>_<run_tag>.eval.details.jsonl (optional)
-      <output_dir>/GARO/passk_summary.json (aggregated over the two models)
+  - verl backend (matching the RewardBudget evaluation helper):
+      <output_dir>/RewardBudget/<dataset>_<run_tag>.parquet
+      <output_dir>/RewardBudget/<dataset>_<run_tag>.eval.json
+      <output_dir>/RewardBudget/<dataset>_<run_tag>.eval.details.jsonl (optional)
+      <output_dir>/RewardBudget/passk_summary.json (aggregated over the two models)
 
 Dataset resolution heuristic:
   1) If a dataset name is already a file path, use it directly.
-  2) Prefer GARO-style layout if --data_root is provided:
-       <data_root>/GARO/test_data/<name>.parquet (or .jsonl/.json)
+  2) Prefer RewardBudget-style layout if --data_root is provided:
+       <data_root>/RewardBudget/test_data/<name>.parquet (or .jsonl/.json)
   3) Fall back to built-in:
        "math500" -> llm_experiments/data/MATH500.json
 
@@ -153,7 +153,7 @@ def _default_ckpts_from_env() -> List[str]:
 def _validate_ckpt_dir(ckpt: str) -> None:
     """
     verl/vllm/transformers expect a *real local HF model directory*.
-    If ckpt is a base dir like /primus_source_checkpoint (not a model dir),
+    If ckpt is a checkpoint root rather than a model dir,
     transformers may treat it like a hub repo id and throw HFValidationError.
     """
     p = _expand_path(ckpt)
@@ -331,7 +331,7 @@ def _run_recipe_evaluation(
     output_jsonl: Optional[Path],
     judge_backend: Optional[str],
 ) -> None:
-    eval_script = project_root / "recipe" / "GARO" / "scripts" / "evaluate" / "evaluation.py"
+    eval_script = project_root / "recipe" / "RewardBudget" / "evaluation.py"
     if not eval_script.exists():
         raise FileNotFoundError(f"Cannot find evaluation.py at: {eval_script}")
 
@@ -347,9 +347,6 @@ def _run_recipe_evaluation(
     ]
     if output_jsonl is not None:
         cmd += ["--output_jsonl", str(output_jsonl)]
-    if judge_backend:
-        cmd += ["--judge_backend", judge_backend]
-
     _run_cmd(cmd, cwd=project_root)
 
 
@@ -385,7 +382,7 @@ def resolve_datasets(dataset_arg: str, data_root: Optional[str], repo_root: Path
 
         tried: List[Path] = []
         if data_root is not None:
-            cand_dir = _expand_path(data_root) / "GARO" / "test_data"
+            cand_dir = _expand_path(data_root) / "RewardBudget" / "test_data"
             cands = [
                 cand_dir / f"{name}.parquet",
                 cand_dir / f"{name}.jsonl",
@@ -697,10 +694,10 @@ def main() -> None:
     parser.add_argument(
         "--data_root",
         type=str,
-        default="/primus_datasets/zmy",
+        default="data",
         help=(
-            "Root directory for GARO-style datasets (expects GARO/test_data/<name>.parquet). "
-            "Defaults to /primus_datasets/zmy."
+            "Root directory for RewardBudget-style datasets "
+            "(expects RewardBudget/test_data/<name>.parquet)."
         ),
     )
     parser.add_argument("-k", type=int, default=1, help="Number of samples per prompt.")
@@ -710,7 +707,7 @@ def main() -> None:
         default="${OUTPUT_DIR}",
         help=(
             "Output directory (parent). Can contain env vars (e.g. ${OUTPUT_DIR}). "
-            "For verl backend, outputs are written under <output_dir>/GARO. "
+            "For verl backend, outputs are written under <output_dir>/RewardBudget. "
             "For legacy backends, jsonl + summary are written under <output_dir>/<model_tag>/."
         ),
     )
@@ -724,8 +721,8 @@ def main() -> None:
             else ("vllm" if _HAS_VLLM else "hf")
         ),
         help=(
-            "Generation backend. 'verl' matches recipe/GARO/scripts/evaluate/eval_all.sh "
-            "(calls verl.trainer.main_generation_multi and recipe evaluation)."
+            "Generation backend. 'verl' calls verl.trainer.main_generation_multi "
+            "and recipe evaluation."
         ),
     )
     parser.add_argument(
@@ -871,7 +868,7 @@ def main() -> None:
         type=str,
         default="qwen_primus",
         choices=["qwen_primus", "openai_compat"],
-        help="Judge backend passed to recipe/GARO/scripts/evaluate/evaluation.py (verl backend).",
+        help="Judge backend label retained for backward compatibility (verl backend).",
     )
     parser.add_argument(
         "--no_eval_details",
@@ -898,7 +895,7 @@ def main() -> None:
             f"Current PRIMUS_SOURCE_CHECKPOINT_DIR={os.environ.get('PRIMUS_SOURCE_CHECKPOINT_DIR')!r}"
         )
 
-    # Strong validation: prevents accidentally passing base dir like /primus_source_checkpoint.
+    # Strong validation: prevents accidentally passing a checkpoint root.
     for ck in ckpt_list:
         _validate_ckpt_dir(ck)
 
@@ -907,7 +904,7 @@ def main() -> None:
             "[WARN] --ckpt/--ckpts are ignored. Using PRIMUS_SOURCE_CHECKPOINT_DIR hard-coded models."
         )
 
-    # Expand output dir correctly (and do NOT bake in /GARO twice).
+    # Expand output dir correctly.
     out_root = _expand_path(args.output_dir)
     if "${" in str(out_root) or "$" in str(out_root):
         # This means user passed an env-var-like string but it didn't expand (env missing).
@@ -936,7 +933,7 @@ def main() -> None:
                 f"Got non-parquet dataset(s): {bad}"
             )
 
-        out_dir = out_root / "GARO"
+        out_dir = out_root / "RewardBudget"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         tmp_dir = _expand_path(args.tmp_dir)

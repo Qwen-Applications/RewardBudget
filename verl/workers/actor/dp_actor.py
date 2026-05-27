@@ -27,9 +27,7 @@ from torch.distributed.tensor import DTensor
 
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
-# new-changes
-from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty, compute_adaptive_beta_per_sample
-# end new-changes
+from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
@@ -524,14 +522,6 @@ class DataParallelPPOActor(BasePPOActor):
         should_compute_kl_loss = self.config.use_kl_loss or getattr(self.config, "log_kl_loss", False)
         if should_compute_kl_loss:
             select_keys.append("ref_log_prob")
-        # new-changes
-        adaptive_beta_cfg = getattr(self.config, "adaptive_beta", None)
-        adaptive_beta_enable = (
-            self.config.use_kl_loss
-            and adaptive_beta_cfg is not None
-            and getattr(adaptive_beta_cfg, "enable", False)
-        )
-        # end new-changes
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -543,8 +533,8 @@ class DataParallelPPOActor(BasePPOActor):
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
-        # Keep group id so adaptive beta and kappa_eff metrics can compare
-        # multiple sampled responses from the same prompt.
+        # Keep group id so kappa_eff metrics can compare multiple sampled
+        # responses from the same prompt.
         group_id_key = None
         if "uid" in data.non_tensor_batch.keys():
             group_id_key = "uid"
@@ -564,34 +554,6 @@ class DataParallelPPOActor(BasePPOActor):
         metrics = {}
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
-                # new-changes: precompute per-sample beta on full mini-batch (not micro-batch)
-                if adaptive_beta_enable:
-                    if "token_level_scores" not in mini_batch.batch:
-                        raise ValueError("adaptive_beta enabled but token_level_scores not found in batch")
-
-                    if "uid" in mini_batch.non_tensor_batch:
-                        group_index = mini_batch.non_tensor_batch["uid"]
-                    elif "index" in mini_batch.non_tensor_batch:
-                        group_index = mini_batch.non_tensor_batch["index"]
-                    else:
-                        raise ValueError("adaptive_beta enabled but no group id (uid/index) in non_tensor_batch")
-
-                    beta_min = float(adaptive_beta_cfg.beta_min)
-                    beta_max = float(adaptive_beta_cfg.beta_max)
-                    default_beta = float(self.config.kl_loss_coef)
-
-                    beta_per_sample = compute_adaptive_beta_per_sample(
-                        token_level_scores=mini_batch.batch["token_level_scores"],
-                        response_mask=mini_batch.batch["response_mask"],
-                        index=group_index,
-                        beta_min=beta_min,
-                        beta_max=beta_max,
-                        default_beta=default_beta,
-                    )  # (bs,)
-
-                    # store into batch so splits carry it to micro-batches
-                    mini_batch.batch["adaptive_beta"] = beta_per_sample
-                # end new-changes
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                     micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
@@ -681,7 +643,6 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         policy_loss = pg_loss
 
-                    # new-changes
                     if should_compute_kl_loss:
                         ref_log_prob = model_inputs["ref_log_prob"]
                         kld = kl_penalty(
@@ -690,22 +651,12 @@ class DataParallelPPOActor(BasePPOActor):
                             kl_penalty=self.config.kl_loss_type,
                         )
 
-                        beta_per_sample = model_inputs.get("adaptive_beta", None)
-                        if beta_per_sample is not None:
-                            kld = kld * beta_per_sample.unsqueeze(-1)
-                            kl_coef = 1.0  # 系数已经包含在 beta 里
-                            reported_kl_coef = beta_per_sample.mean().detach().item()
-                        else:
-                            kl_coef = self.config.kl_loss_coef
-                            reported_kl_coef = self.config.kl_loss_coef
-
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
                         if self.config.use_kl_loss:
-                            policy_loss = policy_loss + kl_loss * kl_coef
+                            policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
 
                         micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor
-                        micro_batch_metrics["actor/kl_coef"] = reported_kl_coef
-                    # end new-changes
+                        micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz

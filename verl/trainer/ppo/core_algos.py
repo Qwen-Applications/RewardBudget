@@ -94,9 +94,7 @@ class AdvantageEstimator(str, Enum):
     estimator instead.
     """
 
-    REWARD_BUDGET_MAX = "reward_budget_max"
-    REWARD_BUDGET_MIN = "reward_budget_min"
-    REWARD_BUDGET_MEAN = "reward_budget_mean"
+    REWARD_BUDGET = "reward_budget"
     GAE = "gae"
     GRPO = "grpo"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
@@ -262,60 +260,9 @@ def compute_gae_advantage_return(
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
 
-# new-changes: reward - max(reward) baseline
-@register_adv_est("reward_budget_max")
-def compute_reward_budget_max_outcome_advantage(
-    token_level_rewards: torch.Tensor,
-    response_mask: torch.Tensor,
-    index: np.ndarray,
-    epsilon: float = 1e-6,
-    config: Optional[AlgoConfig] = None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    For each prompt group (same uid):
-      r_i = sum token_level_rewards over response tokens
-      A_i = r_i - max_j r_j   (reward - max(reward) baseline, per group)
 
-    Then broadcast A_i to token-level advantages.
-    This is a simple baseline, no normalization by sum/std.
-    """
-    # scalar reward per response (bs,)
-    scores = token_level_rewards.sum(dim=-1)
-
-    id2scores = defaultdict(list)
-    id2max = {}
-
-    with torch.no_grad():
-        bsz = scores.shape[0]
-
-        # group rewards by uid
-        for i in range(bsz):
-            uid = index[i]
-            id2scores[uid].append(scores[i])
-
-        # precompute max reward per group
-        for uid, lst in id2scores.items():
-            s = torch.stack(lst)  # (G,)
-            max_s = s.max()
-            id2max[uid] = max_s
-
-        # per-sample scalar advantage: r_i - max_group_reward
-        adv_scalar = torch.zeros_like(scores)
-        for i in range(bsz):
-            uid = index[i]
-            adv_scalar[i] = scores[i] - id2max[uid]
-
-        # broadcast to token level
-        advantages = adv_scalar.unsqueeze(-1) * response_mask
-        returns = advantages  # critic-less
-
-    return advantages, returns
-# end new-changes
-
-# new-changes: add a min-baseline normalized GRPO-style advantage
-@register_adv_est("reward_budget_min")
-def compute_reward_budget_min_outcome_advantage(
+@register_adv_est(AdvantageEstimator.REWARD_BUDGET)
+def compute_reward_budget_outcome_advantage(
     token_level_rewards: torch.Tensor,
     response_mask: torch.Tensor,
     index: np.ndarray,
@@ -329,64 +276,7 @@ def compute_reward_budget_min_outcome_advantage(
       g_i = r_i - min_j r_j
       if all g_i == 0 -> A_i = 0 for all
       else A_i = g_i / sum_j g_j
-    Broadcast A_i to token-level advantages.
-    """
-    # scalar reward per response (same as official GRPO does)
-    scores = token_level_rewards.sum(dim=-1)  # (bs,)
-
-    id2scores = defaultdict(list)
-    id2min = {}
-    id2sumg = {}
-
-    with torch.no_grad():
-        bsz = scores.shape[0]
-        # group rewards by uid
-        for i in range(bsz):
-            id2scores[index[i]].append(scores[i])
-
-        # precompute min and sum_g for each group
-        for uid, lst in id2scores.items():
-            s = torch.stack(lst)  # (G,)
-            min_s = s.min()
-            g = (s - min_s).clamp(min=0.0)
-            sum_g = g.sum()
-            id2min[uid] = min_s
-            id2sumg[uid] = sum_g
-
-        # compute per-sample normalized advantage weight A_i
-        adv_scalar = torch.zeros_like(scores)
-        for i in range(bsz):
-            uid = index[i]
-            g_i = (scores[i] - id2min[uid]).clamp(min=0.0)
-            if id2sumg[uid] <= epsilon:
-                adv_scalar[i] = 0.0
-            else:
-                adv_scalar[i] = g_i / (id2sumg[uid] + epsilon)
-
-        # broadcast to token level
-        advantages = adv_scalar.unsqueeze(-1) * response_mask
-        returns = advantages  # GRPO-style (critic-less) return
-
-    return advantages, returns
-# end new-changes
-
-# new-changes:
-@register_adv_est("reward_budget_mean")
-def compute_reward_budget_mean_outcome_advantage(
-    token_level_rewards: torch.Tensor,
-    response_mask: torch.Tensor,
-    index: np.ndarray,
-    epsilon: float = 1e-6,
-    config: Optional[AlgoConfig] = None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    For each prompt group (same uid):
-      r_i = sum token_level_rewards over response tokens
-      g_i = r_i - min_j r_j
-      if all g_i == 0 -> A_i = 0 for all
-      else A_i = g_i / sum_j g_j
-    Then subtract per-group mean(A_i) as baseline.
+    Then subtract the per-group mean(A_i) as a baseline.
     Broadcast to token-level advantages.
     """
     scores = token_level_rewards.sum(dim=-1)  # (bs,)
@@ -417,7 +307,6 @@ def compute_reward_budget_mean_outcome_advantage(
             else:
                 adv_scalar[i] = g_i / (id2sumg[uid] + epsilon)
 
-        # new-changes: compute per-group baseline = mean of adv_scalar in that group
         id2adv = defaultdict(list)
         for i in range(bsz):
             id2adv[index[i]].append(adv_scalar[i])
@@ -428,13 +317,11 @@ def compute_reward_budget_mean_outcome_advantage(
             baseline_scalar[i] = id2mean_adv[index[i]]
 
         adv_scalar = adv_scalar - baseline_scalar
-        # end new-changes
 
         advantages = adv_scalar.unsqueeze(-1) * response_mask
         returns = advantages  # GRPO-style (critic-less) return
 
     return advantages, returns
-# end new-changes
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
 @register_adv_est(AdvantageEstimator.GRPO)  # or simply: @register_adv_est("grpo")
@@ -1612,51 +1499,6 @@ def compute_value_loss(
     vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
     vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
     return vf_loss, vf_clipfrac
-
-
-# new-changes: adaptive beta helper
-def compute_adaptive_beta_per_sample(
-    token_level_scores: torch.Tensor,
-    response_mask: torch.Tensor,
-    index: np.ndarray | torch.Tensor,
-    beta_min: float,
-    beta_max: float,
-    default_beta: float,
-    eps: float = 1e-8,
-) -> torch.Tensor:
-    device = token_level_scores.device
-
-    # scalar reward per response (bs,)
-    # we take masked mean so it doesn't scale with length
-    scores = verl_F.masked_mean(token_level_scores, response_mask)  # (bs,)
-    r_bin = (scores > 0).to(scores.dtype)  # (bs,) 0/1
-
-    g = as_torch_index(index, device=device)  # (bs,) group ids, int64
-
-    # group sizes G_g and positive counts pos_g
-    G_g = torch.bincount(g).to(scores.dtype)                      # (n_groups,)
-    pos_g = torch.bincount(g, weights=r_bin).to(scores.dtype)     # (n_groups,)
-
-    # degenerate groups
-    all0 = pos_g == 0
-    all1 = pos_g == G_g
-
-    p = pos_g / G_g.clamp(min=1.0)  # (n_groups,)
-
-    # since r_bin^2 = r_bin for binary rewards, sum r_i^2 = pos_g
-    sum_r2 = pos_g
-    n_eff = 1.0 / (G_g * sum_r2).clamp(min=eps)
-
-    s = 4.0 * p * (1.0 - p) * n_eff
-    beta_g = beta_min + (beta_max - beta_min) * s
-
-    # "skip" rule: fall back to default_beta on all-0 or all-1 groups
-    beta_g = torch.where(all0 | all1, torch.full_like(beta_g, default_beta), beta_g)
-
-    # broadcast back to each sample
-    beta_per_sample = beta_g[g]  # (bs,)
-    return beta_per_sample
-# end new-changes
 
 
 def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:

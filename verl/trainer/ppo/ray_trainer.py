@@ -667,85 +667,6 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
 
-        # new-changes: log average token-level entropy on TRAIN data during validation
-        if self.config.trainer.get("log_train_entropy_during_val", False):
-            num_batches = self.config.trainer.get("train_entropy_num_batches", 1)
-
-            entropy_sum = 0.0
-            entropy_cnt = 0.0
-
-            train_iter = iter(self.train_dataloader)
-
-            for _ in range(num_batches):
-                try:
-                    train_data = next(train_iter)
-                except StopIteration:
-                    break
-
-                # 原始 train batch（包含 reward_metadata 等）
-                train_batch = DataProto.from_single_dict(train_data)
-                # 用 _get_gen_batch 拿到“用于生成”的 batch，并从 train_batch 里 pop 掉 input_ids 等
-                train_gen_batch = self._get_gen_batch(train_batch)
-
-                # 生成时用 greedy（temperature=0）
-                train_gen_batch.meta_info.update(
-                    {
-                        "eos_token_id": self.tokenizer.eos_token_id,
-                        "pad_token_id": self.tokenizer.pad_token_id,
-                        "do_sample": False,
-                        "temperature": 0.0,
-                        "top_k": -1,
-                        "top_p": 1.0,
-                        "n": 1,
-                    }
-                )
-
-                # size_divisor 逻辑，和上面的 validation 一致
-                size_divisor = (
-                    self.actor_rollout_wg.world_size
-                    if not self.async_rollout_mode
-                    else self.config.actor_rollout_ref.rollout.agent.num_workers
-                )
-                train_gen_batch_padded, pad_size = pad_dataproto_to_divisor(train_gen_batch, size_divisor)
-
-                # 用同步/异步 rollout 生成响应
-                if not self.async_rollout_mode:
-                    train_out_padded = self.actor_rollout_wg.generate_sequences(train_gen_batch_padded)
-                else:
-                    train_out_padded = self.async_rollout_manager.generate_sequences(train_gen_batch_padded)
-
-                # 先 unpad
-                train_out = unpad_dataproto(train_out_padded, pad_size=pad_size)
-
-                # train_batch 的 input_ids 等字段已经在 _get_gen_batch 里被 pop 掉了，
-                # 所以这里不会和 rollout 的 keys 冲突。
-                train_batch = train_batch.union(train_out)
-
-                # 如果还没有 response_mask，就按 responses 自动算一个
-                if "response_mask" not in train_batch.batch:
-                    train_batch.batch["response_mask"] = compute_response_mask(train_batch)
-
-                # 计算 entropy 时用 temperature=1.0 的“当前 policy”
-                train_batch.meta_info["temperature"] = 1.0
-
-                # 只要 log_prob + entropy，不做梯度更新
-                ent_dp: DataProto = self.actor_rollout_wg.compute_log_prob(
-                    train_batch
-                )
-                entropys = ent_dp.batch["entropys"]  # (bs, resp_len)
-
-                response_mask = train_batch.batch.get("response_mask", None)
-                if response_mask is None:
-                    response_mask = torch.ones_like(entropys, dtype=entropys.dtype)
-                else:
-                    response_mask = response_mask.to(entropys.dtype)
-
-                entropy_sum += (entropys * response_mask).sum().item()
-                entropy_cnt += response_mask.sum().item()
-
-            if entropy_cnt > 0:
-                metric_dict["train/policy_entropy"] = entropy_sum / entropy_cnt
-        # end new-changes
 
         return metric_dict
 
@@ -1306,16 +1227,6 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
-                        # new-changes: periodically sync ref from actor after actor update
-                        ref_sync_freq = self.config.algorithm.get("ref_sync_freq", 100)
-                        if (
-                            self.use_reference_policy
-                            and (not self.ref_in_actor)   # ref 独立 worker 才需要 sync
-                            and (self.global_steps % ref_sync_freq == 0)
-                        ):
-                            actor_state = self.actor_rollout_wg.export_full_state_for_ref()
-                            self.ref_policy_wg.sync_ref_from_actor_state(actor_state)
-                        # end new-changes
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

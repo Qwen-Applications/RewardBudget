@@ -15,7 +15,7 @@
 
 Why this exists:
   - The original `verl.trainer.main_generation` loads the checkpoint every run.
-  - In GARO evaluation, we often want to run multiple test datasets with the
+  - In RewardBudget evaluation, we often want to run multiple test datasets with the
     *same* checkpoint, and repeated checkpoint loading is very expensive.
 
 This module loads the model once (initializes the Ray worker group once), then

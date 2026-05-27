@@ -24,6 +24,7 @@ from verl.trainer.ppo.core_algos import (
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
     compute_grpo_vectorized_outcome_advantage,
+    compute_reward_budget_outcome_advantage,
     compute_rloo_outcome_advantage,
     compute_rloo_vectorized_outcome_advantage,
     get_adv_estimator_fn,
@@ -217,6 +218,36 @@ def _rand_mask(batch_size: int, seq_len: int) -> torch.Tensor:
     if len(rows_without_one) > 0:
         mask[rows_without_one, -1] = 1.0
     return mask
+
+
+def test_reward_budget_outcome_advantage():
+    token_level_rewards = torch.tensor(
+        [
+            [1.0, 0.0],
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [1.0, 0.0],
+        ]
+    )
+    response_mask = torch.ones_like(token_level_rewards)
+    index = np.asarray([0, 0, 1, 1], dtype=np.int64)
+
+    advantages, returns = compute_reward_budget_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+    )
+
+    expected = torch.tensor(
+        [
+            [0.5, 0.5],
+            [-0.5, -0.5],
+            [0.5, 0.5],
+            [-0.5, -0.5],
+        ]
+    )
+    assert torch.allclose(advantages, expected)
+    assert torch.allclose(returns, expected)
 
 
 @pytest.mark.parametrize(

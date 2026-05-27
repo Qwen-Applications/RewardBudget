@@ -76,10 +76,8 @@ from verl.utils.ulysses import (
 from verl.workers.config.optimizer import build_optimizer
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
-# new-changes
 from datasets import load_dataset
-from recipe.GARO.reward import compute_score, _extract_boxed_all, _normalize_answer
-# end new-changes
+from recipe.RewardBudget.reward import compute_score, _extract_boxed_all, _normalize_answer
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_SFT_LOGGING_LEVEL", "WARN"))
@@ -121,7 +119,7 @@ class FSDPSFTTrainer:
             print(f"Using remove padding: {self.use_remove_padding}")
 
         self._build_dataloader(train_dataset, val_dataset)
-        # new-changes: optional separate validation parquet for pass@1 accuracy
+        # Optional separate validation parquet for pass@1 accuracy.
         self.val_pass1_dataset = None
         val_pass1_parquet = getattr(self.config.trainer, "val_pass1_parquet", None)
         if val_pass1_parquet is not None:
@@ -136,7 +134,6 @@ class FSDPSFTTrainer:
                     f"Loaded pass@1 validation dataset from local parquet: {val_pass1_parquet}, "
                     f"num_examples={len(self.val_pass1_dataset)}"
                 )
-        # end new-changes
 
         self.lora = self.config.model.get("lora_adapter_path") is not None or self.config.model.lora_rank > 0
 
@@ -484,7 +481,7 @@ class FSDPSFTTrainer:
                 loss.backward()
             return loss
 
-    # new-changes: compute token-level policy entropy on one batch of SFT data
+    # Compute token-level policy entropy on one batch of SFT data.
     def _compute_batch_entropy(self, batch: TensorDict):
         """
         Compute sum of token-level policy entropy and number of valid tokens
@@ -575,7 +572,6 @@ class FSDPSFTTrainer:
         token_count = loss_mask.sum()
         entropy_sum = token_entropies.sum()
         return entropy_sum, token_count
-    # end new-changes
 
     def training_step(self, batch: TensorDict):
         start_time = time.time()
@@ -648,7 +644,7 @@ class FSDPSFTTrainer:
                 loss /= self.device_mesh.size(0)
         return loss
 
-    # new-changes: compute average token-level policy entropy on sampled training data
+    # Compute average token-level policy entropy on sampled training data.
     def _compute_train_policy_entropy(self):
         """
         Compute H(π_θ, D_train) on a small random subset of the training dataset.
@@ -701,9 +697,8 @@ class FSDPSFTTrainer:
 
         avg_entropy = (total_entropy_sum / (total_token_count + 1e-8)).detach().item()
         return avg_entropy
-    # end new-changes
 
-    # new-changes: pass@1 accuracy on separate parquet validation file
+    # Compute pass@1 accuracy on a separate parquet validation file.
     def _compute_val_pass_at_1_from_parquet(self):
         """
         使用单独的 parquet 验证文件计算 pass@1 accuracy（greedy decoding）：
@@ -823,7 +818,6 @@ class FSDPSFTTrainer:
 
         acc = (correct_tensor / (count_tensor + 1e-8)).detach().item()
         return acc
-    # end new-changes
 
     def save_checkpoint(self, step):
         """Save checkpoint using FSDPCheckpointManager with improved tracking"""
@@ -1070,28 +1064,25 @@ class FSDPSFTTrainer:
                         val_loss = self.validation_step(val_data)
                         val_losses.append(val_loss)
 
-                    # new-changes: optionally compute policy entropy on sampled training data
+                    # Optionally compute policy entropy on sampled training data.
                     train_entropy = None
                     if getattr(self.config.trainer, "log_train_entropy_during_val", False):
                         train_entropy = self._compute_train_policy_entropy()
-                    # end new-changes
 
-                    # new-changes: optionally compute pass@1 accuracy on separate parquet validation file
+                    # Optionally compute pass@1 accuracy on a separate parquet validation file.
                     val_pass1 = None
                     if getattr(self.config.trainer, "log_val_pass1_accuracy", False):
                         val_pass1 = self._compute_val_pass_at_1_from_parquet()
-                    # end new-changes
 
                     if rank == 0:
                         val_loss = torch.mean(torch.stack(val_losses))
                         metric = {"val/loss": val_loss.detach().item()}
 
-                        # new-changes: log extra metrics if available
+                        # Log extra validation metrics when available.
                         if train_entropy is not None:
                             metric["train/policy_entropy"] = train_entropy
                         if val_pass1 is not None:
                             metric["val/pass@1"] = val_pass1
-                        # end new-changes
 
                         tracking.log(data=metric, step=global_step)
                         last_valid_metric = metric
