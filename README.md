@@ -8,7 +8,7 @@
 <a href="TODO">
 <img src="https://img.shields.io/badge/arXiv-TODO-b31b1b.svg?style=for-the-badge" alt="arXiv">
 </a>
-<a href="TODO">
+<a href="https://github.com/Qwen-Applications/RewardBudget">
 <img src="https://img.shields.io/badge/Github-Code-black?style=for-the-badge&logo=github" alt="Github">
 </a>
 <a href="https://opensource.org/licenses/Apache-2.0">
