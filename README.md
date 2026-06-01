@@ -31,7 +31,7 @@ for reproducing RewardBudget experiments.
 ## 1. Setup
 
 ```bash
-git clone TODO
+git clone https://github.com/Qwen-Applications/RewardBudget
 cd RewardBudget
 python -m pip install -e .
 ```
