@@ -125,8 +125,8 @@ ENV/
 
 # data
 *.parquet
-recipe/GARO/test_data/
-recipe/GARO/generations/
+recipe/RewardBudget/test_data/
+recipe/RewardBudget/generations/
 
 # local logs
 logs

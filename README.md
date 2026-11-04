@@ -1,5 +1,5 @@
 <div align="center">
-<h1>Reward Budgeting Reduces Premature Convergence in Reinforcement Learning for LLM Reasoning</h1>
+<h1>[NeuRIPS2026] Reward Budgeting Reduces Premature Convergence in Reinforcement Learning for LLM Reasoning</h1>
 
 <!-- Badges -->
 <a href="https://github.com/Qwen-Applications">
