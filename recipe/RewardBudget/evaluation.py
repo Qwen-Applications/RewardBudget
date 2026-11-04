@@ -1,16 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-RewardBudget evaluation helper.
+"""Evaluate generated responses with pass@1 and pass@k metrics.
 
-Goal:
-  - Mainly supports 4 args: file, k, output, output_jsonl.
-  - For LOCAL_SOURCES: use recipe.RewardBudget.reward.compute_score.
-  - Otherwise: batch judge via vLLM OpenAI-completions-style endpoint (/v1/completions)
-      (OpenAI-compatible completions endpoint).
-
-Judge prompt:
-  - We assemble plain prompt string (qwen_cluster expects you to build prompt yourself)
-  - Require output ONLY: \\boxed{correct} or \\boxed{incorrect}
+For configured data sources, compare the final boxed answer with the ground truth.
+For other sources, use an OpenAI-compatible completions API to judge answers;
+the judge must respond with \\boxed{correct} or \\boxed{incorrect}.
+Supports JSONL and Parquet input and optional per-response JSONL output.
 """
 
 import argparse
@@ -32,8 +26,11 @@ from recipe.RewardBudget.reward import compute_score
 # =====================
 # 1) data_source routing
 # =====================
-# Use exact-match for LOCAL_SOURCES; use the API judge for all other data sources.
+# Use local boxed-answer string matching for these exact data_source values;
+# all other sources require a running OpenAI-compatible judge endpoint.
 LOCAL_SOURCES = {
+    "OpenMath",
+    "dapo-math-17k",
     "gpqa_diamond",
     "gpqa_main",
     "gpqa_extended",
@@ -64,7 +61,7 @@ def local_mkdir(path: str) -> None:
 
 
 # =====================
-# 3) Input iterators (compatible with evaluate.zip's evaluation.py)
+# 3) Input iterators (JSONL and Parquet)
 # =====================
 def _iter_records(file_path: str) -> Iterator[Dict[str, Any]]:
     ext = os.path.splitext(file_path)[1].lower()
@@ -233,8 +230,7 @@ def _trunc(s: str, n: int = 400) -> str:
 
 
 # =====================
-# 6) qwen_cluster-style batch calling (NO dependency on more_itertools/tqdm)
-#     Mirrors evaluate/qwen_cluster.py send_request payload format.
+# 6) Concurrent requests to an OpenAI-compatible completions API
 # =====================
 @dataclass
 class JudgeRuntime:
@@ -273,10 +269,7 @@ def _resolve_url(rt: JudgeRuntime) -> str:
 
 
 def _send_request(prompt: str, rt: JudgeRuntime, param_gen: Dict[str, Any]) -> str:
-    """
-    Exactly like evaluate/qwen_cluster.py: POST {url} with json {"prompt": prompt, **param_gen}
-    and read result['choices'][-1]['text'].
-    """
+    """POST a completion request and return the generated text from its last choice."""
     url = _resolve_url(rt)
     payload = {"prompt": prompt, **param_gen}
     try:
@@ -285,7 +278,7 @@ def _send_request(prompt: str, rt: JudgeRuntime, param_gen: Dict[str, Any]) -> s
         result = resp.json()
         return result["choices"][-1]["text"]
     except Exception as e:
-        # keep behavior similar: print and return empty
+        # An empty response is treated as an invalid judge verdict.
         print(f"[JUDGE_HTTP_ERROR] {repr(e)} url={url}")
         return ""
 
@@ -300,10 +293,10 @@ def call_judge_api_batch(prompts: List[str], rt: JudgeRuntime) -> List[str]:
     if not prompts:
         return []
 
-    # param_gen matches qwen_cluster main style
+    # Use deterministic decoding for reproducible judge verdicts.
     param_gen = {
         "max_tokens": rt.max_tokens,
-        # keep deterministic for judge
+        # Zero temperature avoids sampling variation.
         "temperature": 0.0,
     }
 
@@ -571,23 +564,35 @@ def main() -> None:
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--output_jsonl", type=str, default=None)
     parser.add_argument("--log_every", type=int, default=100, help="Print progress every N samples")
-    # ---- qwen_cluster judge runtime (formerly env vars) ----
-    parser.add_argument("--qwen_ip", type=str, default="127.0.0.1")
-    parser.add_argument("--qwen_port", type=str, default="8000")
-    parser.add_argument("--qwen_text_model_url", type=str, default="http://localhost:port/v1/completions")
-    parser.add_argument("--qwen_max_workers", type=int, default=96)
-    parser.add_argument("--qwen_partition_size", type=int, default=192)
-    parser.add_argument("--qwen_max_tokens", type=int, default=800)
+    # OpenAI-compatible completions API settings; --qwen_* aliases remain supported.
+    parser.add_argument("--judge_ip", "--qwen_ip", dest="judge_ip", type=str, default="127.0.0.1")
+    parser.add_argument("--judge_port", "--qwen_port", dest="judge_port", type=str, default="8000")
+    parser.add_argument(
+        "--judge_url",
+        "--qwen_text_model_url",
+        dest="judge_url",
+        type=str,
+        default="http://localhost:port/v1/completions",
+    )
+    parser.add_argument(
+        "--judge_max_workers", "--qwen_max_workers", dest="judge_max_workers", type=int, default=96
+    )
+    parser.add_argument(
+        "--judge_partition_size", "--qwen_partition_size", dest="judge_partition_size", type=int, default=192
+    )
+    parser.add_argument(
+        "--judge_max_tokens", "--qwen_max_tokens", dest="judge_max_tokens", type=int, default=800
+    )
     parser.add_argument("--judge_timeout", type=int, default=300)
     args = parser.parse_args()
 
     rt = _get_judge_runtime(
-        ip=args.qwen_ip,
-        port=args.qwen_port,
-        url_tmpl=args.qwen_text_model_url,
-        max_workers=args.qwen_max_workers,
-        partition_size=args.qwen_partition_size,
-        max_tokens=args.qwen_max_tokens,
+        ip=args.judge_ip,
+        port=args.judge_port,
+        url_tmpl=args.judge_url,
+        max_workers=args.judge_max_workers,
+        partition_size=args.judge_partition_size,
+        max_tokens=args.judge_max_tokens,
         timeout_seconds=args.judge_timeout,
     )
 

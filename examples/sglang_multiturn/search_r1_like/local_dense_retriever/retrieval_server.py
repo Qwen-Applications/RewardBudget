@@ -376,13 +376,13 @@ def retrieve_endpoint(request: QueryRequest):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch the local faiss retriever.")
     parser.add_argument(
-        "--index_path", type=str, default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index", help="Corpus indexing file."
+        "--index_path", type=str, required=True, help="Path to the FAISS index file."
     )
     parser.add_argument(
         "--corpus_path",
         type=str,
-        default="/home/peterjin/mnt/data/retrieval-corpus/wiki-18.jsonl",
-        help="Local corpus file.",
+        required=True,
+        help="Path to the local corpus file.",
     )
     parser.add_argument("--topk", type=int, default=3, help="Number of retrieved passages for one query.")
     parser.add_argument("--retriever_name", type=str, default="e5", help="Name of the retriever model.")

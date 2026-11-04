@@ -97,25 +97,29 @@ bash recipe/RewardBudget/scripts/train/run_reward_budget.sh \
 
 ## 4. Evaluate
 
-Generate responses and compute pass@k:
+Generate responses and compute pass@k (here with `K=8` sampled responses per question):
 
 ```bash
-bash recipe/RewardBudget/scripts/evaluate/run_eval.sh \
+K=8 bash recipe/RewardBudget/scripts/evaluate/run_eval.sh \
   checkpoints/RewardBudget/qwen2p5_7b/global_step_100/actor \
   data/test.parquet \
   outputs/eval_reward_budget
 ```
 
-For exact-match math-style tasks, the evaluator uses the local boxed-answer reward. For other data sources, `recipe/RewardBudget/evaluation.py` can call an OpenAI-compatible completions endpoint:
+`K` defaults to 1 (greedy decoding, temperature 0). For `K>1`, the script defaults to sampling at temperature 1.0; override with `GEN_TEMPERATURE` if needed. The generation overrides use the `model.*` and `rollout.*` keys from `verl/trainer/config/generation.yaml`.
+
+Local boxed-answer string matching is used when `data_source` is `OpenMath`, `dapo-math-17k`, `amc23`, `aime24`, `aime25`, `math500`, `gpqa_diamond`, `gpqa_main`, `gpqa_extended`, or `mmlu_pro`. Matching strips surrounding whitespace and collapses runs of internal whitespace but **does not check mathematical equivalence**. Other data sources require a running OpenAI-compatible completions judge; failed judge requests are scored as incorrect, so check the endpoint and evaluation logs before trusting those metrics:
 
 ```bash
-python recipe/RewardBudget/evaluation.py \
+python -m recipe.RewardBudget.evaluation \
   --file outputs/eval_reward_budget/generations.parquet \
-  --k 1 \
+  --k 8 \
   --output outputs/eval_reward_budget/eval.json \
   --output_jsonl outputs/eval_reward_budget/eval.details.jsonl \
-  --qwen_text_model_url http://localhost:8000/v1/completions
+  --judge_url http://localhost:8000/v1/completions
 ```
+
+The built-in judge prompt uses Qwen3-Instruct (ChatML) formatting. Adapt `apply_chat_template` in `evaluation.py` if your judge model requires a different prompt format. The legacy `--qwen_*` judge flags are still accepted.
 
 ## 5. Repository Structure
 
