@@ -5,8 +5,8 @@
 <a href="https://github.com/Qwen-Applications">
   <img src="https://img.shields.io/badge/Qwen-Applications-4433FF?style=for-the-badge" alt="Qwen Applications">
 </a>
-<a href="2611.TODO">
-<img src="https://img.shields.io/badge/arXiv-2611.TODO-b31b1b.svg?style=for-the-badge" alt="arXiv">
+<a href="2611.05942">
+<img src="https://img.shields.io/badge/arXiv-2611.05942-b31b1b.svg?style=for-the-badge" alt="arXiv">
 </a>
 <a href="https://github.com/Qwen-Applications/RewardBudget">
 <img src="https://img.shields.io/badge/Github-Code-black?style=for-the-badge&logo=github" alt="Github">
@@ -142,7 +142,7 @@ RewardBudget/
 @article{jia2026rewardbudgeting,
   title={Reward Budgeting Reduces Premature Convergence in Reinforcement Learning for LLM Reasoning},
   author={Mengni Jia, Mengyu Zhou, Xiaoxi Jiang, Guanjun Jiang},
-  journal={arXiv preprint arXiv:2611.TODO},
+  journal={arXiv preprint arXiv:2611.05942},
   year={2026}
 }
 ```
