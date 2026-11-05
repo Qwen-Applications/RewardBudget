@@ -5,7 +5,7 @@
 <a href="https://github.com/Qwen-Applications">
   <img src="https://img.shields.io/badge/Qwen-Applications-4433FF?style=for-the-badge" alt="Qwen Applications">
 </a>
-<a href="2611.05942">
+<a href="https://arxiv.org/abs/2611.05942">
 <img src="https://img.shields.io/badge/arXiv-2611.05942-b31b1b.svg?style=for-the-badge" alt="arXiv">
 </a>
 <a href="https://github.com/Qwen-Applications/RewardBudget">
